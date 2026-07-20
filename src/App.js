@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 
-const WEBHOOK_URL = "https://merge-works.app.n8n.cloud/webhook/dealguard-intake";
+const WEBHOOK_URL = "https://merge-works.app.n8n.cloud/webhook-test/dealguard-intake";
 
 const COLORS = {
   bg: "#0A0F1E",
