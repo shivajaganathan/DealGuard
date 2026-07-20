@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 
-const WEBHOOK_URL = "https://merge-works.app.n8n.cloud/webhook-test/dealguard-intake";
+const WEBHOOK_URL = "https://merge-works.app.n8n.cloud/webhook/dealguard-intake";
 
 const COLORS = {
   bg: "#0A0F1E",
@@ -878,7 +878,7 @@ function LiveView({ analystName }) {
       setStatus("success");
     } catch (e) {
       clearInterval(interval);
-      setErrorMsg(`Error: ${e.message}. Make sure your n8n workflow is in test mode and listening.`);
+      setErrorMsg("Unable to reach the DealGuard analysis engine. Please try again in a moment or contact your administrator if the issue persists.");
       setStatus("error");
     }
   };
@@ -949,7 +949,7 @@ function LiveView({ analystName }) {
         </div>
         {activeCount < 4 && (
           <div style={{ marginTop: 12, padding: "8px 12px", background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.2)", borderRadius: 6, fontSize: 11, color: COLORS.amber }}>
-          }  ⚠ Partial analysis — {4 - activeCount} categor{4 - activeCount === 1 ? "y" : "ies"} skipped. Missing categories will be marked incomplete in the report.
+            ⚠ Partial analysis — {4 - activeCount} categor{4 - activeCount === 1 ? "y" : "ies"} skipped. Missing categories will be marked incomplete in the report.
           </div>
         )}
       </div>
@@ -1003,7 +1003,7 @@ function LiveView({ analystName }) {
         <div style={{ background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 10, padding: 20 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.red, marginBottom: 8 }}>⚠ Submission Failed</div>
           <div style={{ fontSize: 12, color: COLORS.sub, lineHeight: 1.6 }}>{errorMsg}</div>
-          <div style={{ fontSize: 11, color: COLORS.muted, marginTop: 12 }}>Common fixes: make sure your n8n workflow is active and the webhook node is in "Listen for Test Event" mode.</div>
+          <div style={{ fontSize: 11, color: COLORS.muted, marginTop: 12 }}>If this issue persists, please contact your DealGuard administrator.</div>
         </div>
       )}
 
