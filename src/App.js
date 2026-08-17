@@ -3,18 +3,18 @@ import { useState, useEffect } from "react";
 const WEBHOOK_URL = "https://merge-works.app.n8n.cloud/webhook-test/dealguard-intake";
 
 const COLORS = {
-  bg: "#0A0F1E",
-  card: "#111827",
-  card2: "#1A2235",
-  border: "#1E2D45",
-  blue: "#3B82F6",
-  amber: "#F59E0B",
-  red: "#EF4444",
-  green: "#10B981",
-  purple: "#8B5CF6",
-  text: "#F1F5F9",
+  bg: "linear-gradient(135deg, #EEF2FF 0%, #F8FAFF 100%)",
+  card: "#FFFFFF",
+  card2: "#F8FAFC",
+  border: "#E2E8F0",
+  blue: "#4F46E5",
+  amber: "#B45309",
+  red: "#DC2626",
+  green: "#047857",
+  purple: "#7C3AED",
+  text: "#1E2333",
   muted: "#64748B",
-  sub: "#94A3B8",
+  sub: "#475569",
 };
 
 const mockDeals = [
@@ -141,7 +141,7 @@ const pipelineNodes = [
 ];
 
 const sevColor = { critical: COLORS.red, high: COLORS.amber, medium: COLORS.blue, low: COLORS.muted };
-const sevBg = { critical: "rgba(239,68,68,0.12)", high: "rgba(245,158,11,0.12)", medium: "rgba(59,130,246,0.12)", low: "rgba(100,116,139,0.12)" };
+const sevBg = { critical: "rgba(239,68,68,0.12)", high: "rgba(245,158,11,0.12)", medium: "rgba(79,70,229,0.12)", low: "rgba(100,116,139,0.12)" };
 const postureConfig = {
   requires_retrading: { label: "Requires Retrading", color: COLORS.red, bg: "rgba(239,68,68,0.07)", border: "rgba(239,68,68,0.25)" },
   proceed_with_clauses: { label: "Proceed with Clauses", color: COLORS.green, bg: "rgba(16,185,129,0.07)", border: "rgba(16,185,129,0.25)" },
@@ -152,7 +152,7 @@ const catIcon = { customer_concentration: "👥", owner_dependency: "🔑", oper
 
 function ConcentrationChart({ data }) {
   const maxVal = Math.max(...data.map(d => d.pct), 30);
-  const barColors = ["#3B82F6", "#8B5CF6", "#10B981", "#F59E0B", "#EC4899", "#64748B"];
+  const barColors = ["#4F46E5", "#7C3AED", "#047857", "#B45309", "#EC4899", "#64748B"];
   return (
     <div style={{ marginTop: 16 }}>
       <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: COLORS.muted, marginBottom: 12 }}>Revenue Concentration by Customer</div>
@@ -220,9 +220,9 @@ function SeverityDonut({ severity }) {
 function NodeDot({ status }) {
   const configs = {
     complete: { bg: "rgba(16,185,129,0.15)", border: COLORS.green, color: COLORS.green, symbol: "✓", anim: false },
-    running: { bg: "rgba(59,130,246,0.15)", border: COLORS.blue, color: COLORS.blue, symbol: "⟳", anim: true },
+    running: { bg: "rgba(79,70,229,0.15)", border: COLORS.blue, color: COLORS.blue, symbol: "⟳", anim: true },
     escalated: { bg: "rgba(245,158,11,0.15)", border: COLORS.amber, color: COLORS.amber, symbol: "!", anim: false },
-    waiting: { bg: "rgba(30,45,69,0.5)", border: COLORS.border, color: COLORS.muted, symbol: "·", anim: false },
+    waiting: { bg: "rgba(100,116,139,0.12)", border: COLORS.border, color: COLORS.muted, symbol: "·", anim: false },
   };
   const c = configs[status] || configs.waiting;
   return (
@@ -244,9 +244,9 @@ function SeverityBar({ severity }) {
 
 function DealCard({ deal, active, onClick }) {
   const statusColors = { complete: COLORS.green, running: COLORS.blue, escalated: COLORS.amber, failed: COLORS.red };
-  const statusBg = { complete: "rgba(16,185,129,0.12)", running: "rgba(59,130,246,0.12)", escalated: "rgba(245,158,11,0.12)", failed: "rgba(239,68,68,0.12)" };
+  const statusBg = { complete: "rgba(16,185,129,0.12)", running: "rgba(79,70,229,0.12)", escalated: "rgba(245,158,11,0.12)", failed: "rgba(239,68,68,0.12)" };
   return (
-    <div onClick={onClick} style={{ padding: "12px", borderRadius: 8, cursor: "pointer", marginBottom: 6, background: active ? "rgba(59,130,246,0.07)" : COLORS.card2, border: `1px solid ${active ? COLORS.blue : "transparent"}`, transition: "all 0.15s" }}>
+    <div onClick={onClick} style={{ padding: "12px", borderRadius: 8, cursor: "pointer", marginBottom: 6, background: active ? "rgba(79,70,229,0.07)" : COLORS.card2, border: `1px solid ${active ? COLORS.blue : "transparent"}`, transition: "all 0.15s" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text }}>{deal.company}</div>
         <div style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: statusBg[deal.status], color: statusColors[deal.status] }}>{deal.status.charAt(0).toUpperCase() + deal.status.slice(1)}</div>
@@ -284,7 +284,7 @@ function FindingRow({ finding }) {
             <div style={{ fontSize: 10, fontWeight: 700, color: COLORS.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Full Detail</div>
             <div style={{ fontSize: 12, color: COLORS.sub, lineHeight: 1.6 }}>{finding.detail}</div>
           </div>
-          <div style={{ background: "rgba(59,130,246,0.05)", borderRadius: 8, padding: 14, border: "1px solid rgba(59,130,246,0.15)" }}>
+          <div style={{ background: "rgba(79,70,229,0.05)", borderRadius: 8, padding: 14, border: "1px solid rgba(79,70,229,0.15)" }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: COLORS.blue, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Why This Was Flagged</div>
             <div style={{ fontSize: 12, color: COLORS.sub, lineHeight: 1.6 }}>{finding.rationale}</div>
           </div>
@@ -477,9 +477,9 @@ function DealReport({ deal, analystName }) {
 function SeverityBadge({ severity }) {
   const s = (severity || '').toLowerCase();
   const config = {
-    critical: { bg: "rgba(239,68,68,0.12)", color: "#EF4444" },
-    high: { bg: "rgba(245,158,11,0.12)", color: "#F59E0B" },
-    medium: { bg: "rgba(59,130,246,0.12)", color: "#3B82F6" },
+    critical: { bg: "rgba(239,68,68,0.12)", color: "#DC2626" },
+    high: { bg: "rgba(245,158,11,0.12)", color: "#B45309" },
+    medium: { bg: "rgba(79,70,229,0.12)", color: "#4F46E5" },
     low: { bg: "rgba(100,116,139,0.12)", color: "#64748B" },
   };
   const c = config[s] || config.low;
@@ -493,10 +493,10 @@ function SeverityBadge({ severity }) {
 function ReportSeverityBar({ counts }) {
   const total = (counts.critical || 0) + (counts.high || 0) + (counts.medium || 0) + (counts.low || 0) || 1;
   return (
-    <div style={{ height: 6, borderRadius: 3, background: "#1E2D45", display: "flex", overflow: "hidden", gap: 1 }}>
-      {counts.critical > 0 && <div style={{ width: `${(counts.critical / total) * 100}%`, background: "#EF4444", borderRadius: 2 }} />}
-      {counts.high > 0 && <div style={{ width: `${(counts.high / total) * 100}%`, background: "#F59E0B", borderRadius: 2 }} />}
-      {counts.medium > 0 && <div style={{ width: `${(counts.medium / total) * 100}%`, background: "#3B82F6", borderRadius: 2 }} />}
+    <div style={{ height: 6, borderRadius: 3, background: "#E2E8F0", display: "flex", overflow: "hidden", gap: 1 }}>
+      {counts.critical > 0 && <div style={{ width: `${(counts.critical / total) * 100}%`, background: "#DC2626", borderRadius: 2 }} />}
+      {counts.high > 0 && <div style={{ width: `${(counts.high / total) * 100}%`, background: "#B45309", borderRadius: 2 }} />}
+      {counts.medium > 0 && <div style={{ width: `${(counts.medium / total) * 100}%`, background: "#4F46E5", borderRadius: 2 }} />}
       {counts.low > 0 && <div style={{ width: `${(counts.low / total) * 100}%`, background: "#64748B", borderRadius: 2 }} />}
     </div>
   );
@@ -518,16 +518,16 @@ function FindingCard({ finding }) {
   };
 
   const sevColor = {
-    critical: "#EF4444",
-    high: "#F59E0B",
-    medium: "#3B82F6",
+    critical: "#DC2626",
+    high: "#B45309",
+    medium: "#4F46E5",
     low: "#64748B"
   };
 
   const sev = (finding.severity || '').toLowerCase();
 
   return (
-    <div style={{ background: "#111827", border: `1px solid ${expanded ? sevColor[sev] || "#1E2D45" : "#1E2D45"}`, borderRadius: 10, overflow: "hidden", transition: "border-color 0.2s" }}>
+    <div style={{ background: "#FFFFFF", border: `1px solid ${expanded ? sevColor[sev] || "#E2E8F0" : "#E2E8F0"}`, borderRadius: 10, overflow: "hidden", transition: "border-color 0.2s" }}>
       <div onClick={() => setExpanded(!expanded)} style={{ padding: "16px 20px", cursor: "pointer", display: "flex", gap: 14, alignItems: "flex-start" }}>
         <div style={{ width: 4, borderRadius: 2, background: sevColor[sev] || "#64748B", alignSelf: "stretch", flexShrink: 0 }} />
         <div style={{ flex: 1 }}>
@@ -541,10 +541,10 @@ function FindingCard({ finding }) {
               <span style={{ fontSize: 10, color: "#64748B" }}>{expanded ? "▲" : "▼"}</span>
             </div>
           </div>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "#F1F5F9", marginBottom: 4 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#1E2333", marginBottom: 4 }}>
             {finding.title || finding.flag}
           </div>
-          <div style={{ fontSize: 12, color: "#94A3B8", lineHeight: 1.5 }}>
+          <div style={{ fontSize: 12, color: "#475569", lineHeight: 1.5 }}>
             {(finding.description || finding.detail || '').substring(0, 120)}...
           </div>
         </div>
@@ -553,21 +553,21 @@ function FindingCard({ finding }) {
       {expanded && (
         <div style={{ padding: "0 20px 20px 38px", display: "flex", flexDirection: "column", gap: 14 }}>
           {/* Full description */}
-          <div style={{ background: "#1A2235", borderRadius: 8, padding: 14, border: "1px solid #1E2D45" }}>
+          <div style={{ background: "#F8FAFC", borderRadius: 8, padding: 14, border: "1px solid #E2E8F0" }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#64748B", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Full Detail</div>
-            <div style={{ fontSize: 12, color: "#94A3B8", lineHeight: 1.7 }}>{finding.description || finding.detail}</div>
+            <div style={{ fontSize: 12, color: "#475569", lineHeight: 1.7 }}>{finding.description || finding.detail}</div>
           </div>
 
           {/* Sources */}
           {(finding.sources || [finding.source]).filter(Boolean).length > 0 && (
-            <div style={{ background: "rgba(59,130,246,0.05)", borderRadius: 8, padding: 14, border: "1px solid rgba(59,130,246,0.15)" }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#3B82F6", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Evidence Sources</div>
+            <div style={{ background: "rgba(79,70,229,0.05)", borderRadius: 8, padding: 14, border: "1px solid rgba(79,70,229,0.15)" }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#4F46E5", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Evidence Sources</div>
               {(finding.sources || [finding.source]).filter(Boolean).map((src, i) => (
                 <div key={i} style={{ marginBottom: i < (finding.sources || []).length - 1 ? 10 : 0 }}>
                   <div style={{ fontFamily: "monospace", fontSize: 10, color: "#64748B", marginBottom: 3 }}>
                     {src.source_type || src.type} — {src.source_ref || src.ref}
                   </div>
-                  <div style={{ fontSize: 11, color: "#94A3B8", fontStyle: "italic", lineHeight: 1.5 }}>
+                  <div style={{ fontSize: 11, color: "#475569", fontStyle: "italic", lineHeight: 1.5 }}>
                     "{src.excerpt || src.quote}"
                   </div>
                 </div>
@@ -578,21 +578,21 @@ function FindingCard({ finding }) {
           {/* LOI Clause */}
           {(finding.loi_clause?.recommended || finding.loi_clause?.clause_type) && (
             <div style={{ background: "rgba(139,92,246,0.06)", borderRadius: 8, padding: 14, border: "1px solid rgba(139,92,246,0.2)" }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#8B5CF6", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#7C3AED", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
                 LOI Clause → {(finding.loi_clause.clause_type || '').replace(/_/g, ' ').toUpperCase()}
               </div>
-              <div style={{ fontSize: 12, color: "#94A3B8", lineHeight: 1.6 }}>{finding.loi_clause.clause_notes}</div>
+              <div style={{ fontSize: 12, color: "#475569", lineHeight: 1.6 }}>{finding.loi_clause.clause_notes}</div>
             </div>
           )}
 
           {/* Buyer Actions */}
           {(finding.buyer_actions || []).length > 0 && (
             <div style={{ background: "rgba(16,185,129,0.05)", borderRadius: 8, padding: 14, border: "1px solid rgba(16,185,129,0.15)" }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#10B981", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Recommended Buyer Actions</div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#047857", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Recommended Buyer Actions</div>
               {finding.buyer_actions.map((action, i) => (
                 <div key={i} style={{ display: "flex", gap: 8, marginBottom: i < finding.buyer_actions.length - 1 ? 8 : 0 }}>
-                  <div style={{ width: 16, height: 16, borderRadius: "50%", background: "rgba(16,185,129,0.2)", color: "#10B981", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>{i + 1}</div>
-                  <div style={{ fontSize: 12, color: "#94A3B8", lineHeight: 1.5 }}>{action}</div>
+                  <div style={{ width: 16, height: 16, borderRadius: "50%", background: "rgba(16,185,129,0.2)", color: "#047857", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>{i + 1}</div>
+                  <div style={{ fontSize: 12, color: "#475569", lineHeight: 1.5 }}>{action}</div>
                 </div>
               ))}
             </div>
@@ -644,9 +644,9 @@ if (parsed?.text && typeof parsed.text === 'string') {
   // Also handle message/raw_response fallback
   if (parsed?.message || parsed?.raw_response !== undefined) {
     return (
-      <div style={{ padding: 20, background: "#111827", borderRadius: 10, border: "1px solid #1E2D45" }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#F59E0B", marginBottom: 8 }}>⚠ Workflow completed — report saved to Google Drive</div>
-        <div style={{ fontSize: 12, color: "#94A3B8" }}>{parsed.message || "Check Google Drive for the full report."}</div>
+      <div style={{ padding: 20, background: "#FFFFFF", borderRadius: 10, border: "1px solid #E2E8F0" }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#B45309", marginBottom: 8 }}>⚠ Workflow completed — report saved to Google Drive</div>
+        <div style={{ fontSize: 12, color: "#475569" }}>{parsed.message || "Check Google Drive for the full report."}</div>
       </div>
     );
   }
@@ -656,6 +656,7 @@ if (parsed?.text && typeof parsed.text === 'string') {
   const findings = parsed.findings || [];
   const dqFlags = parsed.data_quality_flags || [];
   const postureDetail = parsed.deal_posture_detail || {};
+  const costBreakdown = parsed.cost_breakdown || null;
 
   const counts = {
     critical: summary.critical_count ?? summary.critical ?? parsed.severity_summary?.critical ?? 0,
@@ -666,10 +667,10 @@ if (parsed?.text && typeof parsed.text === 'string') {
 
   const posture = summary.deal_posture?.recommended_posture || parsed.overall_deal_posture || 'unknown';
   const postureConfig = {
-    requires_retrading: { label: "Requires Retrading", color: "#EF4444", bg: "rgba(239,68,68,0.07)", border: "rgba(239,68,68,0.25)" },
-    proceed_with_clauses: { label: "Proceed with Clauses", color: "#10B981", bg: "rgba(16,185,129,0.07)", border: "rgba(16,185,129,0.25)" },
-    escalate_to_analyst: { label: "Escalate to Analyst", color: "#F59E0B", bg: "rgba(245,158,11,0.07)", border: "rgba(245,158,11,0.25)" },
-    pause: { label: "Pause — Additional Data Required", color: "#F59E0B", bg: "rgba(245,158,11,0.07)", border: "rgba(245,158,11,0.25)" },
+    requires_retrading: { label: "Requires Retrading", color: "#DC2626", bg: "rgba(239,68,68,0.07)", border: "rgba(239,68,68,0.25)" },
+    proceed_with_clauses: { label: "Proceed with Clauses", color: "#047857", bg: "rgba(16,185,129,0.07)", border: "rgba(16,185,129,0.25)" },
+    escalate_to_analyst: { label: "Escalate to Analyst", color: "#B45309", bg: "rgba(245,158,11,0.07)", border: "rgba(245,158,11,0.25)" },
+    pause: { label: "Pause — Additional Data Required", color: "#B45309", bg: "rgba(245,158,11,0.07)", border: "rgba(245,158,11,0.25)" },
     unknown: { label: "Review Required", color: "#64748B", bg: "rgba(100,116,139,0.07)", border: "rgba(100,116,139,0.25)" },
   };
   const pc = postureConfig[posture] || postureConfig.unknown;
@@ -680,13 +681,13 @@ if (parsed?.text && typeof parsed.text === 'string') {
       {/* HEADER */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: "#F1F5F9", marginBottom: 4 }}>{meta.target_company}</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: "#1E2333", marginBottom: 4 }}>{meta.target_company}</div>
           <div style={{ fontFamily: "monospace", fontSize: 11, color: "#64748B" }}>
             {meta.deal_id} · Generated {meta.generated_at ? new Date(meta.generated_at).toLocaleString() : new Date().toLocaleString()} · DealGuard Red-Flag Risk Report
           </div>
         </div>
         <button onClick={() => navigator.clipboard.writeText(JSON.stringify(parsed, null, 2))}
-          style={{ padding: "8px 16px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", background: "#1A2235", color: "#94A3B8", border: "1px solid #1E2D45" }}>
+          style={{ padding: "8px 16px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", background: "#F8FAFC", color: "#475569", border: "1px solid #E2E8F0" }}>
           Copy JSON
         </button>
       </div>
@@ -697,20 +698,44 @@ if (parsed?.text && typeof parsed.text === 'string') {
           <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "#64748B", marginBottom: 3 }}>Deal Posture</div>
           <div style={{ fontSize: 18, fontWeight: 700, color: pc.color }}>{pc.label}</div>
         </div>
-        <div style={{ fontSize: 12, color: "#94A3B8", maxWidth: 420, textAlign: "right", lineHeight: 1.6 }}>
+        <div style={{ fontSize: 12, color: "#475569", maxWidth: 420, textAlign: "right", lineHeight: 1.6 }}>
           {summary.deal_posture?.posture_rationale || parsed.escalation?.reason || ''}
         </div>
       </div>
 
+      {/* MODEL SPEND */}
+      {costBreakdown && (
+        <div style={{ background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 10, padding: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "#64748B" }}>Model Spend — This Run</div>
+            <div style={{ fontFamily: "monospace", fontSize: 20, fontWeight: 700, color: "#4F46E5" }}>${(costBreakdown.total_usd ?? 0).toFixed(4)}</div>
+          </div>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            {Object.entries(costBreakdown.by_model || {}).map(([model, m]) => (
+              <div key={model} style={{ flex: "1 1 140px", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 8, padding: 14 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#1E2333", textTransform: "capitalize", marginBottom: 6 }}>{model}</div>
+                <div style={{ fontFamily: "monospace", fontSize: 16, fontWeight: 700, color: "#1E2333", marginBottom: 4 }}>${(m?.cost_usd ?? 0).toFixed(4)}</div>
+                <div style={{ fontSize: 10, color: "#64748B" }}>{((m?.input_tokens ?? 0) + (m?.output_tokens ?? 0)).toLocaleString()} tokens · {(m?.input_tokens ?? 0).toLocaleString()} in / {(m?.output_tokens ?? 0).toLocaleString()} out</div>
+              </div>
+            ))}
+            <div style={{ flex: "1 1 140px", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 8, padding: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#1E2333", marginBottom: 6 }}>Total Tokens</div>
+              <div style={{ fontFamily: "monospace", fontSize: 16, fontWeight: 700, color: "#1E2333", marginBottom: 4 }}>{(costBreakdown.total_tokens ?? 0).toLocaleString()}</div>
+              <div style={{ fontSize: 10, color: "#64748B" }}>Across all models</div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* SEVERITY SUMMARY */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
         {[
-          { label: "Critical", val: counts.critical, color: "#EF4444", sub: "Requires retrading" },
-          { label: "High", val: counts.high, color: "#F59E0B", sub: "LOI clause required" },
-          { label: "Medium", val: counts.medium, color: "#3B82F6", sub: "Monitor closely" },
+          { label: "Critical", val: counts.critical, color: "#DC2626", sub: "Requires retrading" },
+          { label: "High", val: counts.high, color: "#B45309", sub: "LOI clause required" },
+          { label: "Medium", val: counts.medium, color: "#4F46E5", sub: "Monitor closely" },
           { label: "Low", val: counts.low, color: "#64748B", sub: "Flag for review" },
         ].map(s => (
-          <div key={s.label} style={{ background: "#111827", border: "1px solid #1E2D45", borderRadius: 10, padding: 16 }}>
+          <div key={s.label} style={{ background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 10, padding: 16 }}>
             <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "#64748B", marginBottom: 6 }}>{s.label}</div>
             <div style={{ fontFamily: "monospace", fontSize: 32, fontWeight: 700, color: s.color, lineHeight: 1 }}>{s.val}</div>
             <div style={{ fontSize: 11, color: "#64748B", marginTop: 6 }}>{s.sub}</div>
@@ -719,16 +744,16 @@ if (parsed?.text && typeof parsed.text === 'string') {
       </div>
 
       {/* SEVERITY BAR */}
-      <div style={{ background: "#111827", border: "1px solid #1E2D45", borderRadius: 10, padding: 16 }}>
+      <div style={{ background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 10, padding: 16 }}>
         <div style={{ fontSize: 10, fontWeight: 700, color: "#64748B", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
           Finding Distribution — {findings.length} total findings
         </div>
         <ReportSeverityBar counts={counts} />
         <div style={{ display: "flex", gap: 16, marginTop: 10 }}>
-          {[["#EF4444", "Critical"], ["#F59E0B", "High"], ["#3B82F6", "Medium"], ["#64748B", "Low"]].map(([color, label]) => (
+          {[["#DC2626", "Critical"], ["#B45309", "High"], ["#4F46E5", "Medium"], ["#64748B", "Low"]].map(([color, label]) => (
             <div key={label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <div style={{ width: 8, height: 8, borderRadius: 2, background: color }} />
-              <span style={{ fontSize: 11, color: "#94A3B8" }}>{label}</span>
+              <span style={{ fontSize: 11, color: "#475569" }}>{label}</span>
             </div>
           ))}
         </div>
@@ -747,17 +772,17 @@ if (parsed?.text && typeof parsed.text === 'string') {
       {/* DATA QUALITY FLAGS */}
       {dqFlags.length > 0 && (
         <div style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.2)", borderRadius: 10, padding: 20 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#F59E0B", marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#B45309", marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
             <span>⚠</span> Data Quality Flags ({dqFlags.length})
           </div>
           {dqFlags.map((flag, i) => (
             <div key={flag.flag_id || i} style={{ padding: "12px 0", borderTop: i > 0 ? "1px solid rgba(245,158,11,0.1)" : "none" }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                <div style={{ fontFamily: "monospace", fontSize: 10, color: "#F59E0B", fontWeight: 700 }}>{flag.flag_id}</div>
+                <div style={{ fontFamily: "monospace", fontSize: 10, color: "#B45309", fontWeight: 700 }}>{flag.flag_id}</div>
                 <div style={{ fontSize: 10, color: "#64748B" }}>{flag.affected_category?.replace(/_/g, ' ')}</div>
               </div>
-              <div style={{ fontSize: 12, color: "#94A3B8", lineHeight: 1.5, marginBottom: 6 }}>{flag.description}</div>
-              <div style={{ fontSize: 11, color: "#10B981" }}>→ {flag.recommended_resolution}</div>
+              <div style={{ fontSize: 12, color: "#475569", lineHeight: 1.5, marginBottom: 6 }}>{flag.description}</div>
+              <div style={{ fontSize: 11, color: "#047857" }}>→ {flag.recommended_resolution}</div>
             </div>
           ))}
         </div>
@@ -766,11 +791,11 @@ if (parsed?.text && typeof parsed.text === 'string') {
       {/* CONDITIONS TO ADVANCE */}
       {(postureDetail.conditions_to_advance || []).length > 0 && (
         <div style={{ background: "rgba(16,185,129,0.05)", border: "1px solid rgba(16,185,129,0.15)", borderRadius: 10, padding: 20 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#10B981", marginBottom: 14 }}>✓ Conditions to Advance</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#047857", marginBottom: 14 }}>✓ Conditions to Advance</div>
           {postureDetail.conditions_to_advance.map((c, i) => (
             <div key={i} style={{ display: "flex", gap: 10, marginBottom: i < postureDetail.conditions_to_advance.length - 1 ? 10 : 0 }}>
-              <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#10B981", marginTop: 6, flexShrink: 0 }} />
-              <div style={{ fontSize: 12, color: "#94A3B8", lineHeight: 1.5 }}>{c}</div>
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#047857", marginTop: 6, flexShrink: 0 }} />
+              <div style={{ fontSize: 12, color: "#475569", lineHeight: 1.5 }}>{c}</div>
             </div>
           ))}
         </div>
@@ -779,11 +804,11 @@ if (parsed?.text && typeof parsed.text === 'string') {
       {/* CONDITIONS TO REPRICE */}
       {(postureDetail.conditions_to_reprice || []).length > 0 && (
         <div style={{ background: "rgba(239,68,68,0.05)", border: "1px solid rgba(239,68,68,0.15)", borderRadius: 10, padding: 20 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#EF4444", marginBottom: 14 }}>⬇ Conditions to Reprice</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#DC2626", marginBottom: 14 }}>⬇ Conditions to Reprice</div>
           {postureDetail.conditions_to_reprice.map((c, i) => (
             <div key={i} style={{ display: "flex", gap: 10, marginBottom: i < postureDetail.conditions_to_reprice.length - 1 ? 10 : 0 }}>
-              <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#EF4444", marginTop: 6, flexShrink: 0 }} />
-              <div style={{ fontSize: 12, color: "#94A3B8", lineHeight: 1.5 }}>{c}</div>
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#DC2626", marginTop: 6, flexShrink: 0 }} />
+              <div style={{ fontSize: 12, color: "#475569", lineHeight: 1.5 }}>{c}</div>
             </div>
           ))}
         </div>
@@ -791,7 +816,7 @@ if (parsed?.text && typeof parsed.text === 'string') {
 
       {/* ANALYST NOTES */}
       {parsed.analyst_notes && (
-        <div style={{ background: "#111827", border: "1px solid #1E2D45", borderRadius: 10, padding: 20 }}>
+        <div style={{ background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 10, padding: 20 }}>
           <div style={{ fontSize: 10, fontWeight: 700, color: "#64748B", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Analyst Notes — Non-Scored</div>
           <div style={{ fontSize: 12, color: "#64748B", lineHeight: 1.7, fontStyle: "italic" }}>{parsed.analyst_notes}</div>
         </div>
@@ -931,7 +956,7 @@ function LiveView({ analystName }) {
             const active = selectedCategories[cat.key];
             return (
               <div key={cat.key} onClick={() => toggleCategory(cat.key)}
-                style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 8, cursor: "pointer", background: active ? "rgba(59,130,246,0.07)" : COLORS.card2, border: `1px solid ${active ? COLORS.blue : COLORS.border}`, transition: "all 0.15s" }}>
+                style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 8, cursor: "pointer", background: active ? "rgba(79,70,229,0.07)" : COLORS.card2, border: `1px solid ${active ? COLORS.blue : COLORS.border}`, transition: "all 0.15s" }}>
                 <div style={{ width: 16, height: 16, borderRadius: 4, border: `2px solid ${active ? COLORS.blue : COLORS.muted}`, background: active ? COLORS.blue : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}>
                   {active && <span style={{ color: "white", fontSize: 10, fontWeight: 700 }}>✓</span>}
                 </div>
@@ -984,14 +1009,14 @@ function LiveView({ analystName }) {
 
       {/* STATUS */}
       {status === "sending" && (
-        <div style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.2)", borderRadius: 10, padding: 20 }}>
+        <div style={{ background: "rgba(79,70,229,0.06)", border: "1px solid rgba(79,70,229,0.2)", borderRadius: 10, padding: 20 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
             <div style={{ width: 22, height: 22, borderRadius: "50%", border: `2px solid ${COLORS.blue}`, borderTopColor: "transparent", animation: "spin 1s linear infinite" }} />
             <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.blue }}>Workflow running — {elapsed}s elapsed</div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {["Intake", "Normalize", "Route", "Parse", "Classify", "Audit", "Merge", "Validate", "Generate", "Deliver"].map((step, i) => (
-              <div key={step} style={{ fontSize: 10, padding: "3px 10px", borderRadius: 20, background: elapsed > i * 4 ? "rgba(16,185,129,0.15)" : "rgba(30,45,69,0.5)", color: elapsed > i * 4 ? COLORS.green : COLORS.muted, border: `1px solid ${elapsed > i * 4 ? "rgba(16,185,129,0.3)" : COLORS.border}`, fontWeight: 600, transition: "all 0.5s" }}>
+              <div key={step} style={{ fontSize: 10, padding: "3px 10px", borderRadius: 20, background: elapsed > i * 4 ? "rgba(16,185,129,0.15)" : "rgba(100,116,139,0.12)", color: elapsed > i * 4 ? COLORS.green : COLORS.muted, border: `1px solid ${elapsed > i * 4 ? "rgba(16,185,129,0.3)" : COLORS.border}`, fontWeight: 600, transition: "all 0.5s" }}>
                 {elapsed > i * 4 ? "✓ " : ""}{step}
               </div>
             ))}
@@ -1012,7 +1037,7 @@ function LiveView({ analystName }) {
           <div style={{ background: "rgba(16,185,129,0.06)", border: "1px solid rgba(16,185,129,0.25)", borderRadius: 10, padding: 16, display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ fontSize: 20 }}>✅</div>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#10B981", marginBottom: 2 }}>Workflow completed successfully</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#047857", marginBottom: 2 }}>Workflow completed successfully</div>
               <div style={{ fontSize: 11, color: "#64748B" }}>Report generated · Saved to Google Drive · Email sent to {analystName}</div>
             </div>
           </div>
@@ -1075,34 +1100,209 @@ function RunMonitorView({ analystName }) {
   );
 }
 
+// ── AUTH ──────────────────────────────────────────────────────────────────────
+const AUTH_PALETTES = {
+  light: {
+    pageBg: "linear-gradient(135deg, #EEF2FF 0%, #F5F7FF 100%)",
+    cardBg: "#FFFFFF",
+    cardShadow: "0 24px 60px rgba(79,70,229,0.16)",
+    panelBg: "linear-gradient(150deg, #E0E7FF 0%, #C7D2FE 100%)",
+    accent: "#4F46E5",
+    accentContrast: "#FFFFFF",
+    text: "#1E2333",
+    muted: "#6B7280",
+    inputBg: "#F8FAFC",
+    inputBorder: "#E2E8F0",
+    buttonDisabledBg: "#E5E7EB",
+    buttonDisabledText: "#9CA3AF",
+    toggleBg: "#FFFFFF",
+    toggleBorder: "#E2E8F0",
+    panelHeadline: "#1E2333",
+    panelSub: "#4B5566",
+    docCardBg: "#FFFFFF",
+    docCardBorder: "#C7D2FE",
+    docLine: "#C7D2FE",
+    chartCardBg: "rgba(255,255,255,0.6)",
+    chartCardBorder: "#C7D2FE",
+  },
+  dark: {
+    pageBg: "linear-gradient(135deg, #0A0F1E 0%, #111827 100%)",
+    cardBg: "#111827",
+    cardShadow: "0 24px 60px rgba(0,0,0,0.5)",
+    panelBg: "linear-gradient(150deg, #1E1B4B 0%, #3730A3 100%)",
+    accent: "#6366F1",
+    accentContrast: "#FFFFFF",
+    text: "#F1F5F9",
+    muted: "#94A3B8",
+    inputBg: "#1A2235",
+    inputBorder: "#1E2D45",
+    buttonDisabledBg: "#1E2D45",
+    buttonDisabledText: "#64748B",
+    toggleBg: "#1A2235",
+    toggleBorder: "#1E2D45",
+    panelHeadline: "#F1F5F9",
+    panelSub: "#C7D2FE",
+    docCardBg: "#1A2235",
+    docCardBorder: "#3730A3",
+    docLine: "#3730A3",
+    chartCardBg: "rgba(30,27,75,0.5)",
+    chartCardBorder: "#4338CA",
+  },
+};
+
+function AuthIllustration({ pal }) {
+  return (
+    <svg viewBox="0 0 320 320" width="100%" style={{ maxWidth: 220 }}>
+      {/* bar-chart card, tucked behind top-right */}
+      <rect x="150" y="24" width="130" height="104" rx="14" fill={pal.chartCardBg} stroke={pal.chartCardBorder} strokeWidth="1.5" />
+      <rect x="168" y="88" width="14" height="26" rx="3" fill={pal.accent} opacity="0.5" />
+      <rect x="190" y="70" width="14" height="44" rx="3" fill={pal.accent} opacity="0.7" />
+      <rect x="212" y="50" width="14" height="64" rx="3" fill={pal.accent} />
+      <rect x="234" y="78" width="14" height="36" rx="3" fill={pal.accent} opacity="0.55" />
+
+      {/* document card, in front */}
+      <rect x="40" y="70" width="180" height="220" rx="18" fill={pal.docCardBg} stroke={pal.docCardBorder} strokeWidth="1.5" />
+      <rect x="64" y="98" width="90" height="10" rx="5" fill={pal.accent} opacity="0.85" />
+      <rect x="64" y="120" width="130" height="6" rx="3" fill={pal.docLine} />
+      <rect x="64" y="134" width="110" height="6" rx="3" fill={pal.docLine} />
+      <rect x="64" y="148" width="120" height="6" rx="3" fill={pal.docLine} />
+
+      {/* checklist rows */}
+      {[190, 220, 250].map((y, i) => (
+        <g key={i}>
+          <circle cx="76" cy={y} r="10" fill={pal.accent} />
+          <path d={`M71 ${y} l4 4 l7 -8`} stroke={pal.accentContrast} strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+          <rect x="96" y={y - 4} width={i === 1 ? 90 : 106} height="8" rx="4" fill={pal.docLine} />
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+function AuthScreen({ onAuthenticated, initialMode }) {
+  const [theme, setTheme] = useState("light"); // light | dark — local to this screen only
+  const [mode, setMode] = useState(initialMode === "signup" ? "signup" : "signin"); // signin | signup
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(true);
+
+  const pal = AUTH_PALETTES[theme];
+  const switchMode = (m) => setMode(m);
+
+  const canSubmit = mode === "signin"
+    ? email.trim() && password.trim()
+    : fullName.trim() && email.trim() && password.trim();
+
+  const handleSubmit = () => {
+    if (!canSubmit) return;
+    const derivedName = mode === "signup"
+      ? fullName.trim()
+      : (email.trim().split("@")[0] || email.trim());
+    onAuthenticated?.(derivedName);
+  };
+
+  const handleKeyDown = (e) => { if (e.key === "Enter") handleSubmit(); };
+
+  const inputStyle = { width: "100%", background: pal.inputBg, border: `1px solid ${pal.inputBorder}`, borderRadius: 10, padding: "10px 13px", color: pal.text, fontSize: 13, outline: "none", fontFamily: "inherit" };
+  const labelStyle = { fontSize: 12, fontWeight: 600, color: pal.text, marginBottom: 6 };
+
+  return (
+    <div style={{ minHeight: "100vh", background: pal.pageBg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter, system-ui, sans-serif", padding: 24, transition: "background 0.2s" }}>
+      <style>{`* { box-sizing: border-box; margin: 0; padding: 0; } input:focus { border-color: ${pal.accent} !important; }`}</style>
+      <div style={{ position: "relative", width: "100%", maxWidth: 780, background: pal.cardBg, borderRadius: 24, boxShadow: pal.cardShadow, display: "flex", overflow: "hidden", transition: "background 0.2s" }}>
+
+        {/* THEME TOGGLE */}
+        <button onClick={() => setTheme(t => t === "light" ? "dark" : "light")} aria-label="Toggle light/dark theme"
+          style={{ position: "absolute", top: 20, right: 20, width: 34, height: 34, borderRadius: "50%", border: `1px solid ${pal.toggleBorder}`, background: pal.toggleBg, color: pal.accent, fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", zIndex: 2 }}>
+          {theme === "dark" ? "☀" : "☾"}
+        </button>
+
+        {/* LEFT — FORM */}
+        <div style={{ flex: "0 0 55%", padding: "48px 40px 36px", display: "flex", flexDirection: "column" }}>
+          <div style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 700, letterSpacing: "0.14em", color: pal.accent, marginBottom: 30 }}>DEALGUARD</div>
+
+          <div style={{ fontSize: 24, fontWeight: 700, color: pal.text, marginBottom: 6 }}>
+            {mode === "signin" ? "Welcome back" : "Create your account"}
+          </div>
+          <div style={{ fontSize: 13, color: pal.muted, marginBottom: 28, lineHeight: 1.5 }}>
+            {mode === "signin" ? "Sign in to pick up your due diligence review where you left off." : "Set up access to start reviewing deal packets."}
+          </div>
+
+          {mode === "signup" && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={labelStyle}>Full Name</div>
+              <input placeholder="e.g. Sam Jaganathan" value={fullName} onChange={e => setFullName(e.target.value)} onKeyDown={handleKeyDown} style={inputStyle} />
+            </div>
+          )}
+
+          <div style={{ marginBottom: 14 }}>
+            <div style={labelStyle}>Email</div>
+            <input type="email" autoComplete="email" placeholder="you@company.com" value={email} onChange={e => setEmail(e.target.value)} onKeyDown={handleKeyDown} style={inputStyle} />
+          </div>
+
+          <div style={{ marginBottom: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ ...labelStyle, marginBottom: 0 }}>Password</div>
+            {mode === "signin" && <div style={{ fontSize: 11, color: pal.accent, cursor: "pointer", fontWeight: 600 }}>Forgot password?</div>}
+          </div>
+          <input type="password" autoComplete={mode === "signin" ? "current-password" : "new-password"} placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={handleKeyDown}
+            style={{ ...inputStyle, marginTop: 6, marginBottom: mode === "signin" ? 14 : 26 }} />
+
+          {mode === "signin" && (
+            <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 26, cursor: "pointer", userSelect: "none" }}>
+              <input type="checkbox" checked={rememberMe} onChange={e => setRememberMe(e.target.checked)} style={{ width: 15, height: 15, accentColor: pal.accent, cursor: "pointer" }} />
+              <span style={{ fontSize: 12, color: pal.muted }}>Remember me</span>
+            </label>
+          )}
+
+          <button onClick={handleSubmit} disabled={!canSubmit}
+            style={{ width: "100%", padding: "12px", borderRadius: 10, background: canSubmit ? pal.accent : pal.buttonDisabledBg, color: canSubmit ? pal.accentContrast : pal.buttonDisabledText, border: "none", fontSize: 13, fontWeight: 700, cursor: canSubmit ? "pointer" : "not-allowed", transition: "all 0.15s" }}>
+            {mode === "signin" ? "Sign In" : "Create Account"}
+          </button>
+
+          <div style={{ marginTop: "auto", paddingTop: 28, fontSize: 12, color: pal.muted, textAlign: "center" }}>
+            {mode === "signin"
+              ? <>New to DealGuard? <span onClick={() => switchMode("signup")} style={{ color: pal.accent, fontWeight: 700, cursor: "pointer" }}>Create an account</span></>
+              : <>Already have an account? <span onClick={() => switchMode("signin")} style={{ color: pal.accent, fontWeight: 700, cursor: "pointer" }}>Sign in</span></>}
+          </div>
+        </div>
+
+        {/* RIGHT — ILLUSTRATION PANEL */}
+        <div style={{ flex: "0 0 45%", background: pal.panelBg, padding: "40px 30px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", transition: "background 0.2s" }}>
+          <AuthIllustration pal={pal} />
+          <div style={{ fontSize: 17, fontWeight: 700, color: pal.panelHeadline, marginTop: 20, marginBottom: 8, lineHeight: 1.3 }}>
+            Every deal has a story hiding in the numbers.
+          </div>
+          <div style={{ fontSize: 12.5, color: pal.panelSub, lineHeight: 1.6, maxWidth: 240 }}>
+            DealGuard surfaces customer concentration, owner dependency, and SOP gaps before they become post-close surprises.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── APP ───────────────────────────────────────────────────────────────────────
 export default function App() {
   const [mode, setMode] = useState("demo"); // demo | live
   const [view, setView] = useState("deals"); // deals | monitor
   const [selectedDeal, setSelectedDeal] = useState(mockDeals[0]);
   const [analystName, setAnalystName] = useState("");
-  const [nameInput, setNameInput] = useState("");
   const [loggedIn, setLoggedIn] = useState(false);
+  const [authMode] = useState(() => new URLSearchParams(window.location.search).get("mode"));
+
+  useEffect(() => {
+    if (!loggedIn && !authMode) {
+      window.location.replace("/landing.html");
+    }
+  }, [loggedIn, authMode]);
+
+  if (!loggedIn && !authMode) {
+    return null; // redirecting to the marketing landing page
+  }
 
   if (!loggedIn) {
-    return (
-      <div style={{ background: COLORS.bg, height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter, system-ui, sans-serif" }}>
-        <style>{`* { box-sizing: border-box; margin: 0; padding: 0; }`}</style>
-        <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 40, width: 340 }}>
-          <div style={{ fontFamily: "monospace", fontSize: 20, fontWeight: 700, color: COLORS.blue, marginBottom: 4 }}>DealGuard</div>
-          <div style={{ fontSize: 13, color: COLORS.muted, marginBottom: 28 }}>Operational Due Diligence Agent · Post-LOI Risk Analysis</div>
-          <div style={{ fontSize: 11, color: COLORS.muted, marginBottom: 6, fontWeight: 600 }}>Your Name</div>
-          <input placeholder="e.g. S. Jaganathan" value={nameInput} onChange={e => setNameInput(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter" && nameInput.trim()) { setAnalystName(nameInput.trim()); setLoggedIn(true); } }}
-            style={{ width: "100%", background: COLORS.card2, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: "9px 12px", color: COLORS.text, fontSize: 13, outline: "none", fontFamily: "inherit", marginBottom: 16 }} />
-          <button onClick={() => { if (nameInput.trim()) { setAnalystName(nameInput.trim()); setLoggedIn(true); } }}
-            style={{ width: "100%", padding: "11px", borderRadius: 6, background: COLORS.blue, color: "white", border: "none", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
-            Enter Dashboard →
-          </button>
-          <div style={{ marginTop: 20, fontSize: 10, color: COLORS.muted, textAlign: "center" }}>DealGuard · MergeWorks AI Fellowship 2026</div>
-        </div>
-      </div>
-    );
+    return <AuthScreen initialMode={authMode} onAuthenticated={(name) => { setAnalystName(name); setLoggedIn(true); }} />;
   }
 
   return (
@@ -1113,8 +1313,8 @@ export default function App() {
         * { box-sizing: border-box; margin: 0; padding: 0; }
         ::-webkit-scrollbar { width: 4px; height: 4px; }
         ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #1E2D45; border-radius: 2px; }
-        input:focus, textarea:focus { border-color: #3B82F6 !important; }
+        ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 2px; }
+        input:focus, textarea:focus { border-color: #4F46E5 !important; }
       `}</style>
 
       {/* TOPBAR */}
@@ -1142,7 +1342,10 @@ export default function App() {
               ))}
             </div>
           )}
-          <div style={{ fontSize: 12, color: COLORS.sub, fontWeight: 500 }}>{analystName}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ fontSize: 12, color: COLORS.sub, fontWeight: 500 }}>{analystName}</div>
+            <button onClick={() => { setLoggedIn(false); setAnalystName(""); }} style={{ padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", background: COLORS.card2, color: COLORS.sub, border: `1px solid ${COLORS.border}` }}>Sign Out</button>
+          </div>
         </div>
       </div>
 
