@@ -1,4 +1,13 @@
 import { useState, useEffect } from "react";
+import { auth, db } from "./firebase";
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile,
+  signOut,
+} from "firebase/auth";
+import { doc, setDoc, serverTimestamp, collection, query, orderBy, onSnapshot } from "firebase/firestore";
 
 const WEBHOOK_URL = "https://merge-works.app.n8n.cloud/webhook-test/dealguard-intake";
 
@@ -255,7 +264,7 @@ function DealCard({ deal, active, onClick }) {
       <SeverityBar severity={deal.severity} />
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
         <div style={{ fontSize: 10, color: COLORS.muted }}>{deal.severity.critical} critical</div>
-        <div style={{ fontSize: 10, color: COLORS.muted }}>{postureConfig[deal.posture].label.split(" ")[0]}</div>
+        <div style={{ fontSize: 10, color: COLORS.muted }}>{(postureConfig[deal.posture]?.label || "Reviewed").split(" ")[0]}</div>
       </div>
     </div>
   );
@@ -603,11 +612,12 @@ function FindingCard({ finding }) {
   );
 }
 
-function ReportRenderer({ report }) {
+// Tolerant parsing shared by the live-run result view and the Live Tracker tab —
+// n8n's output shape varies (raw JSON, {text: "```json..."}, array-wrapped, etc).
+function parseReportData(report) {
   if (!report) return null;
 
   // Handle both direct report and wrapped in array
-  // Handle array wrapper
   let r = Array.isArray(report) ? report[0] : report;
 
   // Handle text field from n8n
@@ -628,27 +638,22 @@ function ReportRenderer({ report }) {
     }
   }
 
-// If still wrapped in another array
-if (Array.isArray(parsed)) {
-  parsed = parsed[0];
-}
+  // If still wrapped in another array
+  if (Array.isArray(parsed)) {
+    parsed = parsed[0];
+  }
 
-// Handle if text is inside parsed
-if (parsed?.text && typeof parsed.text === 'string') {
-  try {
-    const cleaned = parsed.text.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
-    parsed = JSON.parse(cleaned);
-  } catch(e) {}
-}
+  // Handle if text is inside parsed
+  if (parsed?.text && typeof parsed.text === 'string') {
+    try {
+      const cleaned = parsed.text.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
+      parsed = JSON.parse(cleaned);
+    } catch(e) {}
+  }
 
   // Also handle message/raw_response fallback
   if (parsed?.message || parsed?.raw_response !== undefined) {
-    return (
-      <div style={{ padding: 20, background: "#FFFFFF", borderRadius: 10, border: "1px solid #E2E8F0" }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#B45309", marginBottom: 8 }}>⚠ Workflow completed — report saved to Google Drive</div>
-        <div style={{ fontSize: 12, color: "#475569" }}>{parsed.message || "Check Google Drive for the full report."}</div>
-      </div>
-    );
+    return { parsed, incomplete: true };
   }
 
   const meta = parsed.report_metadata || { deal_id: parsed.deal_id, target_company: parsed.target_company, generated_at: parsed.generated_at };
@@ -666,14 +671,43 @@ if (parsed?.text && typeof parsed.text === 'string') {
   };
 
   const posture = summary.deal_posture?.recommended_posture || parsed.overall_deal_posture || 'unknown';
-  const postureConfig = {
-    requires_retrading: { label: "Requires Retrading", color: "#DC2626", bg: "rgba(239,68,68,0.07)", border: "rgba(239,68,68,0.25)" },
-    proceed_with_clauses: { label: "Proceed with Clauses", color: "#047857", bg: "rgba(16,185,129,0.07)", border: "rgba(16,185,129,0.25)" },
-    escalate_to_analyst: { label: "Escalate to Analyst", color: "#B45309", bg: "rgba(245,158,11,0.07)", border: "rgba(245,158,11,0.25)" },
-    pause: { label: "Pause — Additional Data Required", color: "#B45309", bg: "rgba(245,158,11,0.07)", border: "rgba(245,158,11,0.25)" },
-    unknown: { label: "Review Required", color: "#64748B", bg: "rgba(100,116,139,0.07)", border: "rgba(100,116,139,0.25)" },
+
+  return { parsed, meta, summary, findings, dqFlags, postureDetail, costBreakdown, counts, posture, incomplete: false };
+}
+
+const REPORT_POSTURE_CONFIG = {
+  requires_retrading: { label: "Requires Retrading", color: "#DC2626", bg: "rgba(239,68,68,0.07)", border: "rgba(239,68,68,0.25)" },
+  proceed_with_clauses: { label: "Proceed with Clauses", color: "#047857", bg: "rgba(16,185,129,0.07)", border: "rgba(16,185,129,0.25)" },
+  escalate_to_analyst: { label: "Escalate to Analyst", color: "#B45309", bg: "rgba(245,158,11,0.07)", border: "rgba(245,158,11,0.25)" },
+  pause: { label: "Pause — Additional Data Required", color: "#B45309", bg: "rgba(245,158,11,0.07)", border: "rgba(245,158,11,0.25)" },
+  unknown: { label: "Review Required", color: "#64748B", bg: "rgba(100,116,139,0.07)", border: "rgba(100,116,139,0.25)" },
+};
+
+function ReportRenderer({ report }) {
+  const [expandedCats, setExpandedCats] = useState({});
+
+  const rd = parseReportData(report);
+  if (!rd) return null;
+
+  if (rd.incomplete) {
+    const parsed = rd.parsed;
+    return (
+      <div style={{ padding: 20, background: "#FFFFFF", borderRadius: 10, border: "1px solid #E2E8F0" }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#B45309", marginBottom: 8 }}>⚠ Workflow completed — report saved to Google Drive</div>
+        <div style={{ fontSize: 12, color: "#475569" }}>{parsed.message || "Check Google Drive for the full report."}</div>
+      </div>
+    );
+  }
+
+  const { parsed, meta, summary, findings, dqFlags, postureDetail, costBreakdown, counts, posture } = rd;
+  const pc = REPORT_POSTURE_CONFIG[posture] || REPORT_POSTURE_CONFIG.unknown;
+
+  const knownCats = Object.keys(catLabel);
+  const extraCats = Array.from(new Set(findings.map(f => f.category).filter(c => c && !knownCats.includes(c))));
+  const allCats = [...knownCats, ...extraCats];
+  const toggleCat = (cat, defaultExpanded) => {
+    setExpandedCats(prev => ({ ...prev, [cat]: !(cat in prev ? prev[cat] : defaultExpanded) }));
   };
-  const pc = postureConfig[posture] || postureConfig.unknown;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -727,20 +761,25 @@ if (parsed?.text && typeof parsed.text === 'string') {
         </div>
       )}
 
-      {/* SEVERITY SUMMARY */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-        {[
-          { label: "Critical", val: counts.critical, color: "#DC2626", sub: "Requires retrading" },
-          { label: "High", val: counts.high, color: "#B45309", sub: "LOI clause required" },
-          { label: "Medium", val: counts.medium, color: "#4F46E5", sub: "Monitor closely" },
-          { label: "Low", val: counts.low, color: "#64748B", sub: "Flag for review" },
-        ].map(s => (
-          <div key={s.label} style={{ background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 10, padding: 16 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "#64748B", marginBottom: 6 }}>{s.label}</div>
-            <div style={{ fontFamily: "monospace", fontSize: 32, fontWeight: 700, color: s.color, lineHeight: 1 }}>{s.val}</div>
-            <div style={{ fontSize: 11, color: "#64748B", marginTop: 6 }}>{s.sub}</div>
-          </div>
-        ))}
+      {/* SEVERITY SUMMARY + DONUT */}
+      <div style={{ display: "flex", gap: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, flex: 1 }}>
+          {[
+            { label: "Critical", val: counts.critical, color: "#DC2626", sub: "Requires retrading" },
+            { label: "High", val: counts.high, color: "#B45309", sub: "LOI clause required" },
+            { label: "Medium", val: counts.medium, color: "#4F46E5", sub: "Monitor closely" },
+            { label: "Low", val: counts.low, color: "#64748B", sub: "Flag for review" },
+          ].map(s => (
+            <div key={s.label} style={{ background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 10, padding: 16 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "#64748B", marginBottom: 6 }}>{s.label}</div>
+              <div style={{ fontFamily: "monospace", fontSize: 32, fontWeight: 700, color: s.color, lineHeight: 1 }}>{s.val}</div>
+              <div style={{ fontSize: 11, color: "#64748B", marginTop: 6 }}>{s.sub}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 10, padding: 20, display: "flex", alignItems: "center", justifyContent: "center", minWidth: 200 }}>
+          <SeverityDonut severity={counts} />
+        </div>
       </div>
 
       {/* SEVERITY BAR */}
@@ -759,13 +798,42 @@ if (parsed?.text && typeof parsed.text === 'string') {
         </div>
       </div>
 
-      {/* FINDINGS */}
+      {/* FINDINGS BY CATEGORY */}
       <div>
         <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "#64748B", marginBottom: 12 }}>
-          Findings — click to expand
+          Findings by Category — {findings.length} total
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {findings.map(f => <FindingCard key={f.finding_id || f.id} finding={f} />)}
+          {allCats.map(cat => {
+            const catFindings = findings.filter(f => f.category === cat);
+            const label = catLabel[cat] || cat.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            const icon = catIcon[cat] || "📌";
+            const defaultExpanded = catFindings.length > 0;
+            const isExpanded = cat in expandedCats ? expandedCats[cat] : defaultExpanded;
+            const topSev = catFindings.length === 0 ? "clean" : (catFindings[0].severity || '').toLowerCase();
+            return (
+              <div key={cat} style={{ background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 10, overflow: "hidden" }}>
+                <div onClick={() => toggleCat(cat, defaultExpanded)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 18px", cursor: "pointer" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{ fontSize: 16 }}>{icon}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#1E2333" }}>{label}</div>
+                    <div style={{ fontSize: 11, color: "#64748B" }}>{catFindings.length} finding{catFindings.length !== 1 ? "s" : ""}</div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: topSev === "clean" ? "rgba(16,185,129,0.12)" : (sevBg[topSev] || sevBg.low), color: topSev === "clean" ? "#047857" : (sevColor[topSev] || sevColor.low) }}>{topSev === "clean" ? "CLEAN" : topSev.toUpperCase()}</div>
+                    <div style={{ fontSize: 11, color: "#64748B" }}>{isExpanded ? "▲" : "▼"}</div>
+                  </div>
+                </div>
+                {isExpanded && (
+                  <div style={{ padding: "0 18px 16px" }}>
+                    {catFindings.length === 0
+                      ? <div style={{ fontSize: 12, color: "#64748B", padding: "12px 0", borderTop: "1px solid #E2E8F0" }}>No findings in this category.</div>
+                      : <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingTop: 4 }}>{catFindings.map(f => <FindingCard key={f.finding_id || f.id} finding={f} />)}</div>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -827,7 +895,45 @@ if (parsed?.text && typeof parsed.text === 'string') {
 }
 
 // ── LIVE VIEW ─────────────────────────────────────────────────────────────────
-function LiveView({ analystName }) {
+async function saveDealPacketToFirestore(uid, fileName, content) {
+  if (!uid) {
+    console.warn("DealGuard: no signed-in user; skipping deal packet save to Firestore.");
+    return;
+  }
+  try {
+    const id = `${Date.now()}-${fileName}`;
+    await setDoc(doc(db, "users", uid, "dealPackets", id), {
+      fileName,
+      content,
+      uploadedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    console.error("DealGuard: failed to save deal packet to Firestore.", err);
+  }
+}
+
+async function saveReportToFirestore(uid, dealId, data) {
+  if (!uid) {
+    console.warn("DealGuard: no signed-in user; skipping report save to Firestore.");
+    return;
+  }
+  try {
+    const rd = parseReportData(data);
+    const id = String(dealId || rd?.meta?.deal_id || Date.now());
+    await setDoc(doc(db, "users", uid, "reports", id), {
+      dealId: id,
+      targetCompany: rd?.meta?.target_company || null,
+      severityCounts: rd?.counts || { critical: 0, high: 0, medium: 0, low: 0 },
+      posture: rd?.posture || null,
+      report: data,
+      createdAt: serverTimestamp(),
+    });
+  } catch (err) {
+    console.error("DealGuard: failed to save report to Firestore.", err);
+  }
+}
+
+function LiveView({ analystName, uid }) {
   const [jsonInput, setJsonInput] = useState("");
   const [status, setStatus] = useState("idle");
   const [result, setResult] = useState(null);
@@ -901,6 +1007,7 @@ function LiveView({ analystName }) {
       }
       setResult(data);
       setStatus("success");
+      saveReportToFirestore(uid, parsed?.deal_id, data);
     } catch (e) {
       clearInterval(interval);
       setErrorMsg("Unable to reach the DealGuard analysis engine. Please try again in a moment or contact your administrator if the issue persists.");
@@ -912,7 +1019,10 @@ function LiveView({ analystName }) {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => setJsonInput(ev.target.result);
+    reader.onload = (ev) => {
+      setJsonInput(ev.target.result);
+      saveDealPacketToFirestore(uid, file.name, ev.target.result);
+    };
     reader.readAsText(file);
   };
 
@@ -1048,6 +1158,91 @@ function LiveView({ analystName }) {
   );
 }
 
+// ── LIVE TRACKER ──────────────────────────────────────────────────────────────
+function LiveTrackerView({ uid, onGoLive }) {
+  const [runs, setRuns] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedId, setSelectedId] = useState(null);
+
+  useEffect(() => {
+    if (!uid) {
+      setRuns([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    const q = query(collection(db, "users", uid, "reports"), orderBy("createdAt", "desc"));
+    const unsubscribe = onSnapshot(q, (snap) => {
+      const list = snap.docs.map(d => {
+        const data = d.data();
+        return {
+          id: d.id,
+          company: data.targetCompany || data.dealId || d.id,
+          time: data.createdAt?.toDate ? data.createdAt.toDate().toLocaleString() : "",
+          severity: data.severityCounts || { critical: 0, high: 0, medium: 0, low: 0 },
+          status: "complete",
+          posture: data.posture || "unknown",
+          report: data.report,
+        };
+      });
+      setRuns(list);
+      setLoading(false);
+    }, (err) => {
+      console.error("DealGuard: failed to load run history from Firestore.", err);
+      setLoading(false);
+    });
+    return unsubscribe;
+  }, [uid]);
+
+  useEffect(() => {
+    if (runs.length > 0 && !runs.some(r => r.id === selectedId)) {
+      setSelectedId(runs[0].id);
+    }
+  }, [runs, selectedId]);
+
+  const selectedRun = runs.find(r => r.id === selectedId) || null;
+
+  if (loading) {
+    return (
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, color: COLORS.muted }}>
+        Loading your past runs…
+      </div>
+    );
+  }
+
+  if (runs.length === 0) {
+    return (
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ textAlign: "center", maxWidth: 360 }}>
+          <div style={{ fontSize: 32, marginBottom: 12 }}>📭</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.text, marginBottom: 6 }}>No runs yet</div>
+          <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 20, lineHeight: 1.6 }}>Head to Live Analysis to get started — completed runs will show up here automatically.</div>
+          <button onClick={onGoLive} style={{ padding: "10px 20px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", background: COLORS.blue, color: "white", border: "none" }}>Go to Live Analysis →</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div style={{ width: 264, background: COLORS.card, borderRight: `1px solid ${COLORS.border}`, display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}>
+        <div style={{ padding: "12px 16px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: COLORS.muted }}>Run History</div>
+          <div style={{ fontFamily: "monospace", fontSize: 11, color: COLORS.blue, fontWeight: 700 }}>{runs.length} run{runs.length !== 1 ? "s" : ""}</div>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: 8 }}>
+          {runs.map(r => (
+            <DealCard key={r.id} deal={r} active={selectedId === r.id} onClick={() => setSelectedId(r.id)} />
+          ))}
+        </div>
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: 28 }}>
+        {selectedRun && <ReportRenderer key={selectedRun.id} report={selectedRun.report} />}
+      </div>
+    </>
+  );
+}
+
 
 // ── RUN MONITOR ───────────────────────────────────────────────────────────────
 function RunMonitorView({ analystName }) {
@@ -1179,6 +1374,26 @@ function AuthIllustration({ pal }) {
   );
 }
 
+function firebaseAuthErrorMessage(err) {
+  switch (err?.code) {
+    case "auth/wrong-password":
+    case "auth/invalid-credential":
+      return "Incorrect email or password.";
+    case "auth/user-not-found":
+      return "No account found with that email.";
+    case "auth/email-already-in-use":
+      return "An account with that email already exists.";
+    case "auth/weak-password":
+      return "Password should be at least 6 characters.";
+    case "auth/invalid-email":
+      return "Enter a valid email address.";
+    case "auth/too-many-requests":
+      return "Too many attempts. Please try again in a moment.";
+    default:
+      return "Something went wrong. Please try again.";
+  }
+}
+
 function AuthScreen({ onAuthenticated, initialMode }) {
   const [theme, setTheme] = useState("light"); // light | dark — local to this screen only
   const [mode, setMode] = useState(initialMode === "signup" ? "signup" : "signin"); // signin | signup
@@ -1186,20 +1401,33 @@ function AuthScreen({ onAuthenticated, initialMode }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [rememberMe, setRememberMe] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [authError, setAuthError] = useState("");
 
   const pal = AUTH_PALETTES[theme];
-  const switchMode = (m) => setMode(m);
+  const switchMode = (m) => { setMode(m); setAuthError(""); };
 
   const canSubmit = mode === "signin"
     ? email.trim() && password.trim()
     : fullName.trim() && email.trim() && password.trim();
 
-  const handleSubmit = () => {
-    if (!canSubmit) return;
-    const derivedName = mode === "signup"
-      ? fullName.trim()
-      : (email.trim().split("@")[0] || email.trim());
-    onAuthenticated?.(derivedName);
+  const handleSubmit = async () => {
+    if (!canSubmit || submitting) return;
+    setAuthError("");
+    setSubmitting(true);
+    try {
+      if (mode === "signup") {
+        const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
+        await updateProfile(cred.user, { displayName: fullName.trim() });
+      } else {
+        await signInWithEmailAndPassword(auth, email.trim(), password);
+      }
+      onAuthenticated?.();
+    } catch (err) {
+      setAuthError(firebaseAuthErrorMessage(err));
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleKeyDown = (e) => { if (e.key === "Enter") handleSubmit(); };
@@ -1255,9 +1483,13 @@ function AuthScreen({ onAuthenticated, initialMode }) {
             </label>
           )}
 
-          <button onClick={handleSubmit} disabled={!canSubmit}
-            style={{ width: "100%", padding: "12px", borderRadius: 10, background: canSubmit ? pal.accent : pal.buttonDisabledBg, color: canSubmit ? pal.accentContrast : pal.buttonDisabledText, border: "none", fontSize: 13, fontWeight: 700, cursor: canSubmit ? "pointer" : "not-allowed", transition: "all 0.15s" }}>
-            {mode === "signin" ? "Sign In" : "Create Account"}
+          {authError && (
+            <div style={{ fontSize: 12, color: "#DC2626", marginBottom: 14, lineHeight: 1.4 }}>{authError}</div>
+          )}
+
+          <button onClick={handleSubmit} disabled={!canSubmit || submitting}
+            style={{ width: "100%", padding: "12px", borderRadius: 10, background: (canSubmit && !submitting) ? pal.accent : pal.buttonDisabledBg, color: (canSubmit && !submitting) ? pal.accentContrast : pal.buttonDisabledText, border: "none", fontSize: 13, fontWeight: 700, cursor: (canSubmit && !submitting) ? "pointer" : "not-allowed", transition: "all 0.15s" }}>
+            {submitting ? "Please wait…" : (mode === "signin" ? "Sign In" : "Create Account")}
           </button>
 
           <div style={{ marginTop: "auto", paddingTop: 28, fontSize: 12, color: pal.muted, textAlign: "center" }}>
@@ -1284,25 +1516,49 @@ function AuthScreen({ onAuthenticated, initialMode }) {
 
 // ── APP ───────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [mode, setMode] = useState("demo"); // demo | live
+  const [mode, setMode] = useState("demo"); // demo | live | tracker
   const [view, setView] = useState("deals"); // deals | monitor
   const [selectedDeal, setSelectedDeal] = useState(mockDeals[0]);
-  const [analystName, setAnalystName] = useState("");
-  const [loggedIn, setLoggedIn] = useState(false);
+  const [firebaseUser, setFirebaseUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [authMode] = useState(() => new URLSearchParams(window.location.search).get("mode"));
 
+  const toPlainUser = (u) => (u ? { uid: u.uid, displayName: u.displayName, email: u.email } : null);
+  const syncUser = () => setFirebaseUser(toPlainUser(auth.currentUser));
+
   useEffect(() => {
-    if (!loggedIn && !authMode) {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setFirebaseUser(toPlainUser(user));
+      setAuthLoading(false);
+    });
+    return unsubscribe;
+  }, []);
+
+  const loggedIn = !!firebaseUser;
+  const analystName = firebaseUser
+    ? (firebaseUser.displayName || (firebaseUser.email ? firebaseUser.email.split("@")[0] : ""))
+    : "";
+
+  useEffect(() => {
+    if (!authLoading && !loggedIn && !authMode) {
       window.location.replace("/landing.html");
     }
-  }, [loggedIn, authMode]);
+  }, [authLoading, loggedIn, authMode]);
+
+  if (authLoading) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: COLORS.bg, fontFamily: "Inter, system-ui, sans-serif", fontSize: 13, color: COLORS.muted }}>
+        Loading…
+      </div>
+    );
+  }
 
   if (!loggedIn && !authMode) {
     return null; // redirecting to the marketing landing page
   }
 
   if (!loggedIn) {
-    return <AuthScreen initialMode={authMode} onAuthenticated={(name) => { setAnalystName(name); setLoggedIn(true); }} />;
+    return <AuthScreen initialMode={authMode} onAuthenticated={syncUser} />;
   }
 
   return (
@@ -1331,6 +1587,7 @@ export default function App() {
               {mode === "live" && <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: COLORS.green, marginRight: 5, animation: "pulse 2s infinite", verticalAlign: "middle" }} />}
               LIVE
             </button>
+            <button onClick={() => setMode("tracker")} style={{ padding: "5px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", border: "none", background: mode === "tracker" ? "rgba(79,70,229,0.15)" : "transparent", color: mode === "tracker" ? COLORS.blue : COLORS.muted, transition: "all 0.15s", letterSpacing: "0.05em" }}>TRACKER</button>
           </div>
         </div>
 
@@ -1344,7 +1601,7 @@ export default function App() {
           )}
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ fontSize: 12, color: COLORS.sub, fontWeight: 500 }}>{analystName}</div>
-            <button onClick={() => { setLoggedIn(false); setAnalystName(""); }} style={{ padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", background: COLORS.card2, color: COLORS.sub, border: `1px solid ${COLORS.border}` }}>Sign Out</button>
+            <button onClick={() => signOut(auth)} style={{ padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", background: COLORS.card2, color: COLORS.sub, border: `1px solid ${COLORS.border}` }}>Sign Out</button>
           </div>
         </div>
       </div>
@@ -1370,7 +1627,8 @@ export default function App() {
         {/* CONTENT */}
         {mode === "demo" && view === "deals" && selectedDeal && <DealReport deal={selectedDeal} analystName={analystName} />}
         {mode === "demo" && view === "monitor" && <RunMonitorView analystName={analystName} />}
-        {mode === "live" && <LiveView analystName={analystName} />}
+        {mode === "live" && <LiveView analystName={analystName} uid={firebaseUser?.uid} />}
+        {mode === "tracker" && <LiveTrackerView uid={firebaseUser?.uid} onGoLive={() => setMode("live")} />}
       </div>
     </div>
   );
