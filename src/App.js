@@ -9,7 +9,7 @@ import {
 } from "firebase/auth";
 import { doc, setDoc, serverTimestamp, collection, query, orderBy, onSnapshot } from "firebase/firestore";
 
-const WEBHOOK_URL = "https://merge-works.app.n8n.cloud/webhook-test/dealguard-intake";
+const WEBHOOK_URL = "https://merge-works.app.n8n.cloud/webhook/dealguard-intake";
 
 const COLORS = {
   bg: "linear-gradient(135deg, #EEF2FF 0%, #F8FAFF 100%)",
