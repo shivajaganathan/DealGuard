@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useLayoutEffect } from "react";
 import { auth, db } from "./firebase";
 import {
   onAuthStateChanged,
@@ -340,7 +340,10 @@ function DealReport({ deal, analystName }) {
         <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: COLORS.muted, marginBottom: 16 }}>Deal Facts</div>
         {[{ label: "Target Company", key: "company", type: "text" }, { label: "Industry", key: "industry", type: "text" }, { label: "Annual SDE ($)", key: "annualSde", type: "number" }, { label: "Enterprise Value ($)", key: "ev", type: "number" }].map(f => (
           <div key={f.key} style={{ marginBottom: 14 }}>
-            <div style={{ fontSize: 10, color: COLORS.muted, marginBottom: 5, fontWeight: 600 }}>{f.label}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+              <div style={{ fontSize: 10, color: COLORS.muted, fontWeight: 600 }}>{f.label}</div>
+              <UserInputTag />
+            </div>
             <input type={f.type} value={inputs[f.key]} onChange={e => setInputs(prev => ({ ...prev, [f.key]: f.type === "number" ? Number(e.target.value) : e.target.value }))}
               style={{ width: "100%", background: COLORS.card2, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: "7px 10px", color: COLORS.text, fontSize: 12, outline: "none", fontFamily: "inherit" }} />
           </div>
@@ -499,6 +502,103 @@ function SeverityBadge({ severity }) {
   );
 }
 
+// Provenance tagging — the locked report schema puts a source.type on every finding
+// (one of exactly these five values). Render a small colored pill keyed off it and stay
+// silent when it's missing or doesn't match a known value — never infer a provenance
+// that wasn't actually reported. "site_note" gets its own (amber) color since the system
+// prompt's rules treat site-visit evidence as weaker — it can never solely support a
+// High or Critical finding.
+const SOURCE_TYPE_CONFIG = {
+  calculation: { label: "Calculated", bg: "rgba(100,116,139,0.12)", color: "#64748B" },
+  transcript: { label: "From Transcript", bg: "rgba(79,70,229,0.12)", color: "#4F46E5" },
+  csv_row: { label: "From Spreadsheet", bg: "rgba(79,70,229,0.12)", color: "#4F46E5" },
+  document: { label: "From Document", bg: "rgba(79,70,229,0.12)", color: "#4F46E5" },
+  site_note: { label: "Site Visit Note", bg: "rgba(245,158,11,0.12)", color: "#B45309" },
+};
+
+function getSourceType(finding) {
+  const raw = finding?.source?.type;
+  if (!raw || typeof raw !== "string") return null;
+  const key = raw.trim().toLowerCase();
+  return key in SOURCE_TYPE_CONFIG ? key : null;
+}
+
+function ProvenanceTag({ value }) {
+  const cfg = SOURCE_TYPE_CONFIG[value];
+  if (!cfg) return null;
+  return (
+    <div style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: cfg.bg, color: cfg.color, letterSpacing: "0.08em", textTransform: "uppercase", whiteSpace: "nowrap", flexShrink: 0 }}>
+      {cfg.label}
+    </div>
+  );
+}
+
+// Deal Facts fields are always analyst-typed — this one's unconditional, no field to check.
+function UserInputTag() {
+  return (
+    <div style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "rgba(124,58,237,0.12)", color: "#7C3AED", letterSpacing: "0.08em", textTransform: "uppercase", whiteSpace: "nowrap" }}>
+      User Input
+    </div>
+  );
+}
+
+// Sonnet's per-category classifier_output.confidence values are 0-1 (e.g. 0.92). Report-level
+// or finding-level confidence may already arrive as a whole percentage instead — normalize both.
+function getConfidencePct(raw) {
+  if (raw === undefined || raw === null || raw === "") return null;
+  const num = Number(raw);
+  if (Number.isNaN(num)) return null;
+  const pct = num > 0 && num < 1 ? num * 100 : num;
+  return Math.round(pct * 10) / 10;
+}
+
+function ConfidenceBadge({ pct }) {
+  if (pct === null || pct === undefined) return null;
+  return (
+    <div style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "rgba(13,148,136,0.12)", color: "#0D9488", letterSpacing: "0.05em" }}>
+      {pct}% CONFIDENCE
+    </div>
+  );
+}
+
+// Report-level confidence indicator — NOT an AI-reported value, and never should be. Computed
+// entirely client-side from data-completeness signals that are always present in the locked
+// report schema (escalation, missing_categories, per-finding source.ref). Do not wire this to
+// a Sonnet-emitted confidence field; none exists or is expected.
+function computeReportConfidence(parsed) {
+  if (!parsed || typeof parsed !== "object") return null;
+
+  let score = 100;
+
+  if (parsed.escalation?.required === true) score -= 15;
+
+  const missingCount = Array.isArray(parsed.missing_categories) ? parsed.missing_categories.length : 0;
+  score -= Math.min(missingCount * 10, 40);
+
+  const findings = Array.isArray(parsed.findings) ? parsed.findings : [];
+  for (const f of findings) {
+    const sev = (f?.severity || "").toLowerCase();
+    if ((sev === "high" || sev === "critical") && f?.source?.ref === null) {
+      score -= 3;
+    }
+  }
+
+  score = Math.max(40, Math.min(100, score));
+  return Math.round(score);
+}
+
+function ReportConfidenceBadge({ pct }) {
+  if (pct === null || pct === undefined) return null;
+  return (
+    <div
+      title="Derived from data completeness — missing categories, escalations, and unreferenced high-severity findings lower this score."
+      style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "rgba(100,116,139,0.12)", color: "#475569", letterSpacing: "0.03em", cursor: "default" }}>
+      {pct}% confidence
+      <span style={{ width: 12, height: 12, borderRadius: "50%", border: "1px solid #94A3B8", fontSize: 8, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", color: "#94A3B8", lineHeight: 1, flexShrink: 0 }}>i</span>
+    </div>
+  );
+}
+
 function ReportSeverityBar({ counts }) {
   const total = (counts.critical || 0) + (counts.high || 0) + (counts.medium || 0) + (counts.low || 0) || 1;
   return (
@@ -534,6 +634,8 @@ function FindingCard({ finding }) {
   };
 
   const sev = (finding.severity || '').toLowerCase();
+  const sourceType = getSourceType(finding);
+  const findingConfidencePct = getConfidencePct(finding.confidence ?? finding.confidence_score ?? finding.source?.confidence);
 
   return (
     <div style={{ background: "#FFFFFF", border: `1px solid ${expanded ? sevColor[sev] || "#E2E8F0" : "#E2E8F0"}`, borderRadius: 10, overflow: "hidden", transition: "border-color 0.2s" }}>
@@ -547,6 +649,7 @@ function FindingCard({ finding }) {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <SeverityBadge severity={finding.severity} />
+              <ConfidenceBadge pct={findingConfidencePct} />
               <span style={{ fontSize: 10, color: "#64748B" }}>{expanded ? "▲" : "▼"}</span>
             </div>
           </div>
@@ -570,7 +673,10 @@ function FindingCard({ finding }) {
           {/* Sources */}
           {(finding.sources || [finding.source]).filter(Boolean).length > 0 && (
             <div style={{ background: "rgba(79,70,229,0.05)", borderRadius: 8, padding: 14, border: "1px solid rgba(79,70,229,0.15)" }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#4F46E5", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Evidence Sources</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "#4F46E5", textTransform: "uppercase", letterSpacing: "0.08em" }}>Evidence Sources</div>
+                <ProvenanceTag value={sourceType} />
+              </div>
               {(finding.sources || [finding.source]).filter(Boolean).map((src, i) => (
                 <div key={i} style={{ marginBottom: i < (finding.sources || []).length - 1 ? 10 : 0 }}>
                   <div style={{ fontFamily: "monospace", fontSize: 10, color: "#64748B", marginBottom: 3 }}>
@@ -683,6 +789,147 @@ const REPORT_POSTURE_CONFIG = {
   unknown: { label: "Review Required", color: "#64748B", bg: "rgba(100,116,139,0.07)", border: "rgba(100,116,139,0.25)" },
 };
 
+// Static reference of what each DD category typically requires. Purely a lookup table — the
+// list rendered for a report comes from its own missing_categories array (locked schema), never
+// from LLM output, so there's nothing here to invent or call an API for.
+const DOCUMENT_REQUEST_MAP = {
+  customer_concentration: ["Customer revenue detail by account (trailing 12-24 months)", "Customer contracts or purchase agreements"],
+  owner_dependency: ["Owner interview transcript or recording", "Organizational chart with roles and responsibilities"],
+  operational_sop: ["Written SOPs for order fulfillment, customer onboarding, invoicing, employee onboarding, and vendor management"],
+  employee_culture: ["Employee roster with tenure, compensation, and non-compete status", "Site visit notes"],
+  web_research: ["Company website URL for public signal review"],
+};
+
+function SuggestedDocumentRequests({ missingCategories }) {
+  const formatLabel = cat => catLabel[cat] || (cat || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+  if (missingCategories.length === 0) {
+    return (
+      <div style={{ background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 10, padding: 20 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#047857" }}>✓ All expected document categories were provided for this analysis</div>
+      </div>
+    );
+  }
+
+  const copyRequestList = () => {
+    const text = missingCategories.map(cat => {
+      const docs = DOCUMENT_REQUEST_MAP[cat] || [];
+      return `${formatLabel(cat)}\n` + docs.map(d => `- ${d}`).join('\n');
+    }).join('\n\n');
+    navigator.clipboard.writeText(text);
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "#64748B" }}>
+          Suggested Document Requests — {missingCategories.length} categor{missingCategories.length !== 1 ? "ies" : "y"}
+        </div>
+        <button onClick={copyRequestList}
+          style={{ padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", background: "#F8FAFC", color: "#475569", border: "1px solid #E2E8F0" }}>
+          Copy request list
+        </button>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {missingCategories.map((cat, i) => (
+          <div key={cat} style={{ background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 10, padding: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#1E2333" }}>
+                <span style={{ color: "#64748B" }}>{i + 1}.</span> {formatLabel(cat)}
+              </div>
+              <div style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "rgba(239,68,68,0.12)", color: "#DC2626", letterSpacing: "0.05em" }}>
+                REQUIRED
+              </div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {(DOCUMENT_REQUEST_MAP[cat] || []).map((doc, j) => (
+                <div key={j} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                  <div style={{ width: 4, height: 4, borderRadius: "50%", background: "#94A3B8", marginTop: 6, flexShrink: 0 }} />
+                  <div style={{ fontSize: 12, color: "#475569", lineHeight: 1.5 }}>{doc}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Turns high/critical findings into a fillable seller-question tracker. Questions are generated
+// client-side from a fixed template over existing finding fields — no API call, no invented text.
+// The "asked" checkbox and "Seller response" textarea are plain useState, scoped to this
+// component instance: nothing here is written to Firestore, localStorage, or any other browser
+// storage API, consistent with the rest of the codebase. Refreshing the page, switching reports,
+// or re-running a live analysis loses these answers — persisting them is a follow-up, not done here.
+function QuestionsForSeller({ findings }) {
+  const [answers, setAnswers] = useState({}); // { [questionId]: { asked: bool, response: string } }
+
+  const urgentFindings = findings.filter(f => ["high", "critical"].includes((f.severity || '').toLowerCase()));
+
+  if (urgentFindings.length === 0) {
+    return (
+      <div style={{ background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 10, padding: 20 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#047857", marginBottom: 4 }}>✓ Questions for Seller</div>
+        <div style={{ fontSize: 12, color: "#64748B" }}>No urgent follow-up questions — all findings are medium or low severity.</div>
+      </div>
+    );
+  }
+
+  const questions = urgentFindings.map((f, i) => ({
+    id: f.finding_id || f.id || i,
+    finding: f,
+    text: `Can you provide documentation or context regarding: ${f.flag ?? f.title}?`,
+  }));
+
+  const answeredCount = questions.filter(q => (answers[q.id]?.response || '').trim().length > 0).length;
+
+  const updateAnswer = (id, patch) => setAnswers(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+
+  const copyQuestions = () => {
+    const text = questions.map((q, i) => `${i + 1}. ${q.text}`).join('\n');
+    navigator.clipboard.writeText(text);
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "#64748B" }}>
+          Questions for Seller — {answeredCount} of {questions.length} answered
+        </div>
+        <button onClick={copyQuestions}
+          style={{ padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", background: "#F8FAFC", color: "#475569", border: "1px solid #E2E8F0" }}>
+          Copy all questions
+        </button>
+      </div>
+      <div style={{ background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 10, overflow: "hidden" }}>
+        {questions.map((q, i) => {
+          const a = answers[q.id] || {};
+          const cat = q.finding.category;
+          const catText = catLabel[cat] || (cat || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || "Uncategorized";
+          return (
+            <div key={q.id} style={{ padding: 16, borderTop: i > 0 ? "1px solid #E2E8F0" : "none" }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                <input type="checkbox" checked={!!a.asked} onChange={e => updateAnswer(q.id, { asked: e.target.checked })}
+                  style={{ width: 15, height: 15, marginTop: 2, accentColor: "#4F46E5", cursor: "pointer", flexShrink: 0 }} />
+                <div style={{ flex: 1, fontSize: 12, color: "#1E2333", lineHeight: 1.5 }}>
+                  <span style={{ color: "#64748B", fontWeight: 600 }}>{i + 1}.</span> {q.text}
+                </div>
+                <div style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "rgba(100,116,139,0.12)", color: "#64748B", letterSpacing: "0.05em", textTransform: "uppercase", whiteSpace: "nowrap", flexShrink: 0 }}>
+                  {catText}
+                </div>
+              </div>
+              <textarea value={a.response || ''} onChange={e => updateAnswer(q.id, { response: e.target.value })}
+                placeholder="Seller response…"
+                style={{ width: "100%", marginTop: 10, minHeight: 50, background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 6, padding: "8px 10px", color: "#1E2333", fontSize: 12, outline: "none", resize: "vertical", fontFamily: "inherit" }} />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ReportRenderer({ report }) {
   const [expandedCats, setExpandedCats] = useState({});
 
@@ -701,6 +948,28 @@ function ReportRenderer({ report }) {
 
   const { parsed, meta, summary, findings, dqFlags, postureDetail, costBreakdown, counts, posture } = rd;
   const pc = REPORT_POSTURE_CONFIG[posture] || REPORT_POSTURE_CONFIG.unknown;
+  const dataConfidencePct = computeReportConfidence(parsed);
+
+  // Stat chips — only ever built from real fields, never a placeholder/zero. SDE and EV aren't
+  // part of the locked report schema's output (only the input payload), so they only appear if
+  // the workflow happened to echo them back; Documents Analyzed and Findings are always known.
+  const sdeVal = Number(parsed.annual_sde ?? parsed.deal_facts?.annual_sde);
+  const evVal = Number(parsed.ev ?? parsed.deal_facts?.ev);
+  const hasSde = Number.isFinite(sdeVal) && sdeVal > 0;
+  const hasEv = Number.isFinite(evVal) && evVal > 0;
+  const missingCategories = Array.isArray(parsed.missing_categories) ? parsed.missing_categories : [];
+  const statChips = [];
+  if (hasSde) statChips.push({ label: "Annual SDE", value: `$${sdeVal.toLocaleString()}` });
+  if (hasEv) statChips.push({ label: "Enterprise Value", value: `$${evVal.toLocaleString()}` });
+  if (hasSde && hasEv) statChips.push({ label: "Implied Multiple", value: `${(evVal / sdeVal).toFixed(1)}x` });
+  statChips.push({ label: "Documents Analyzed", value: `${ALL_DD_CATEGORIES.length - missingCategories.length}/${ALL_DD_CATEGORIES.length}` });
+  statChips.push({ label: "Findings", value: `${findings.length}` });
+
+  const copySummary = () => {
+    const confPart = dataConfidencePct !== null && dataConfidencePct !== undefined ? ` — Confidence: ${dataConfidencePct}%` : '';
+    const text = `${meta.target_company || 'Target Company'} — Posture: ${pc.label} — ${findings.length} findings (${counts.critical} critical, ${counts.high} high)${confPart}`;
+    navigator.clipboard.writeText(text);
+  };
 
   const knownCats = Object.keys(catLabel);
   const extraCats = Array.from(new Set(findings.map(f => f.category).filter(c => c && !knownCats.includes(c))));
@@ -720,17 +989,36 @@ function ReportRenderer({ report }) {
             {meta.deal_id} · Generated {meta.generated_at ? new Date(meta.generated_at).toLocaleString() : new Date().toLocaleString()} · DealGuard Red-Flag Risk Report
           </div>
         </div>
-        <button onClick={() => navigator.clipboard.writeText(JSON.stringify(parsed, null, 2))}
-          style={{ padding: "8px 16px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", background: "#F8FAFC", color: "#475569", border: "1px solid #E2E8F0" }}>
-          Copy JSON
-        </button>
+        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          <button onClick={copySummary}
+            style={{ padding: "8px 16px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", background: "#F8FAFC", color: "#475569", border: "1px solid #E2E8F0" }}>
+            Copy Summary
+          </button>
+          <button onClick={() => navigator.clipboard.writeText(JSON.stringify(parsed, null, 2))}
+            style={{ padding: "8px 16px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", background: "#F8FAFC", color: "#475569", border: "1px solid #E2E8F0" }}>
+            Copy JSON
+          </button>
+        </div>
+      </div>
+
+      {/* STAT CHIPS */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        {statChips.map(c => (
+          <div key={c.label} style={{ display: "flex", flexDirection: "column", gap: 2, padding: "8px 14px", borderRadius: 8, border: "1px solid #E2E8F0", background: "#F8FAFC" }}>
+            <div style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "#94A3B8" }}>{c.label}</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#1E2333", fontFamily: "monospace" }}>{c.value}</div>
+          </div>
+        ))}
       </div>
 
       {/* DEAL POSTURE BANNER */}
       <div style={{ borderRadius: 10, padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", background: pc.bg, border: `1px solid ${pc.border}` }}>
         <div>
           <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "#64748B", marginBottom: 3 }}>Deal Posture</div>
-          <div style={{ fontSize: 18, fontWeight: 700, color: pc.color }}>{pc.label}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ fontSize: 18, fontWeight: 700, color: pc.color }}>{pc.label}</div>
+            <ReportConfidenceBadge pct={dataConfidencePct} />
+          </div>
         </div>
         <div style={{ fontSize: 12, color: "#475569", maxWidth: 420, textAlign: "right", lineHeight: 1.6 }}>
           {summary.deal_posture?.posture_rationale || parsed.escalation?.reason || ''}
@@ -782,6 +1070,9 @@ function ReportRenderer({ report }) {
         </div>
       </div>
 
+      {/* SUGGESTED DOCUMENT REQUESTS */}
+      <SuggestedDocumentRequests missingCategories={Array.isArray(parsed.missing_categories) ? parsed.missing_categories : []} />
+
       {/* SEVERITY BAR */}
       <div style={{ background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 10, padding: 16 }}>
         <div style={{ fontSize: 10, fontWeight: 700, color: "#64748B", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
@@ -795,6 +1086,50 @@ function ReportRenderer({ report }) {
               <span style={{ fontSize: 11, color: "#475569" }}>{label}</span>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* RISK MATRIX */}
+      {/* The locked report schema has no separate impact/likelihood axes — only severity and
+          source.type — so this maps severity directly onto the four quadrants rather than
+          plotting a true 2-axis matrix. If the schema ever grows distinct impact/likelihood
+          fields, this should be rebuilt as a real scatter/quadrant plot on those instead. */}
+      <div>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "#64748B", marginBottom: 12 }}>
+          Risk Matrix
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
+          {[
+            { key: "critical", label: "Critical — Act Now", color: "#DC2626", bg: "rgba(239,68,68,0.04)", border: "rgba(239,68,68,0.2)" },
+            { key: "high", label: "Review Required", color: "#B45309", bg: "rgba(245,158,11,0.04)", border: "rgba(245,158,11,0.2)" },
+            { key: "medium", label: "Investigate Further", color: "#4F46E5", bg: "rgba(79,70,229,0.04)", border: "rgba(79,70,229,0.2)" },
+            { key: "low", label: "Monitor", color: "#64748B", bg: "rgba(100,116,139,0.04)", border: "rgba(100,116,139,0.2)" },
+          ].map(q => {
+            const qFindings = findings.filter(f => (f.severity || '').toLowerCase() === q.key);
+            return (
+              <div key={q.key} style={{ background: q.bg, border: `1px solid ${q.border}`, borderRadius: 10, padding: 16, minHeight: 120 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: q.color }}>{q.label}</div>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: "#64748B" }}>{qFindings.length}</div>
+                </div>
+                {qFindings.length === 0 ? (
+                  <div style={{ fontSize: 12, color: "#94A3B8", fontStyle: "italic" }}>No findings in this category</div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {qFindings.map((f, i) => (
+                      <div key={f.finding_id || f.id || i} style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                        <div style={{ width: 4, height: 4, borderRadius: "50%", background: q.color, flexShrink: 0 }} />
+                        <div style={{ fontSize: 12, color: "#475569", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
+                          {f.flag ?? f.title}
+                        </div>
+                        <ProvenanceTag value={getSourceType(f)} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -836,6 +1171,74 @@ function ReportRenderer({ report }) {
           })}
         </div>
       </div>
+
+      {/* PUBLIC & WEB INTELLIGENCE — supplementary highlight, not a replacement for the
+          web_research entry already inside Findings by Category above. */}
+      <div style={{ background: "rgba(79,70,229,0.03)", border: "1px solid rgba(79,70,229,0.15)", borderRadius: 10, padding: 20 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#1E2333", marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
+          <span>🌐</span> Public & Web Intelligence
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-start", background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 8, padding: 12, marginBottom: 16 }}>
+          <span style={{ fontSize: 15, flexShrink: 0 }}>⚠</span>
+          <div style={{ fontSize: 12, color: "#92400E", lineHeight: 1.5, fontWeight: 600 }}>
+            Web-sourced signals are kept separate from uploaded-document evidence. Use for context only — these are not verified diligence facts the way document-sourced findings are.
+          </div>
+        </div>
+        {(() => {
+          const webFindings = findings.filter(f => f.category === "web_research");
+          return webFindings.length === 0
+            ? <div style={{ fontSize: 12, color: "#64748B" }}>No public web signal was analyzed for this deal.</div>
+            : <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{webFindings.map(f => <FindingCard key={f.finding_id || f.id} finding={f} />)}</div>;
+        })()}
+      </div>
+
+      {/* NEGOTIATION LEVERS SUMMARY */}
+      {/* Deliberately qualitative — the locked Sonnet system prompt (rule 14) forbids inventing
+          dollar amounts, percentages, or durations that weren't directly supplied in the input
+          data, and loi_clause has no dollar field at all. Do not add totals/percentages/savings
+          math here; only ever surface clause_notes verbatim. */}
+      {(() => {
+        const leveredFindings = findings.filter(f => f.loi_clause?.recommended === true && f.loi_clause?.clause_type);
+        const clauseGroups = {};
+        leveredFindings.forEach(f => {
+          const type = f.loi_clause.clause_type;
+          (clauseGroups[type] = clauseGroups[type] || []).push(f);
+        });
+        const clauseTypes = Object.keys(clauseGroups);
+        if (clauseTypes.length === 0) return null;
+        return (
+          <div>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "#64748B", marginBottom: 12 }}>
+              Negotiation Levers Summary — {clauseTypes.length} clause type{clauseTypes.length !== 1 ? "s" : ""}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
+              {clauseTypes.map(type => {
+                const group = clauseGroups[type];
+                const label = type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+                return (
+                  <div key={type} style={{ background: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 10, padding: 16 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#1E2333" }}>{label}</div>
+                      <div style={{ fontSize: 11, color: "#64748B" }}>{group.length} finding{group.length !== 1 ? "s" : ""}</div>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {group.map((f, i) => (
+                        <div key={f.finding_id || f.id || i} style={{ paddingTop: i > 0 ? 10 : 0, borderTop: i > 0 ? "1px solid #E2E8F0" : "none" }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: "#1E2333", marginBottom: 2 }}>{f.flag ?? f.title}</div>
+                          <div style={{ fontSize: 11, color: "#64748B", lineHeight: 1.5 }}>{f.loi_clause.clause_notes}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* QUESTIONS FOR SELLER */}
+      <QuestionsForSeller findings={findings} />
 
       {/* DATA QUALITY FLAGS */}
       {dqFlags.length > 0 && (
@@ -895,6 +1298,108 @@ function ReportRenderer({ report }) {
 }
 
 // ── LIVE VIEW ─────────────────────────────────────────────────────────────────
+// Every run always covers all 5 DD categories — there is no per-run toggle, so this is the
+// single source of truth for both the payload sent to n8n and the read-only chip row below.
+const ALL_DD_CATEGORIES = ["customer_concentration", "owner_dependency", "operational_sop", "employee_culture", "web_research"];
+
+const LIVE_CATEGORY_CHIPS = [
+  { key: "customer_concentration", label: "Customer Concentration", icon: "👥", description: "Revenue mix & contract terms" },
+  { key: "owner_dependency", label: "Owner Dependency", icon: "🔑", description: "Replacement cost & succession risk" },
+  { key: "operational_sop", label: "SOP / Process Risk", icon: "📋", description: "Documented workflows & continuity" },
+  { key: "employee_culture", label: "Employee & Culture", icon: "🏢", description: "Roster, tenure & retention risk" },
+  { key: "web_research", label: "Web Research", icon: "🌐", description: "Public signal & online footprint" },
+];
+
+const LIVE_CAPABILITY_BADGES = ["5 Risk Categories", "Sourced Evidence", "Partial Data OK", "~2-3 Min Average Runtime"];
+
+// ── WALKTHROUGH TOUR ─────────────────────────────────────────────────────────
+// Self-contained, tooltip-driven, fully skippable. Anchors are located by DOM id (via
+// document.getElementById) rather than refs threaded through props, since the 5 anchor
+// elements live in different components (top nav lives in App, the rest in LiveView) — id
+// lookup lets the tour work regardless of which component actually renders each target.
+// State (which step, whether it's running, whether it's been seen) lives in App so it can be
+// triggered from anywhere (Live Analysis header, Guide page) — session-only, never localStorage.
+const TOUR_STEPS = [
+  { anchorId: "tour-anchor-chips", title: "5 Risk Categories, Every Run", description: "DealGuard checks 5 risk categories every time: customer concentration, owner dependency, SOP coverage, employee & culture, and public web signal." },
+  { anchorId: "tour-anchor-jsoncard", title: "Paste or Load a Deal Packet", description: "Paste a deal packet here, or click Load Example to try a real test deal instantly." },
+  { anchorId: "tour-anchor-send", title: "Run the Analysis", description: "This kicks off the full analysis — typically 2-3 minutes for a complete run." },
+  { anchorId: "tour-anchor-nav", title: "Explore Demo Mode", description: "Demo mode has pre-built sample deals if you want to explore the report layout before running your own." },
+  { anchorId: "tour-anchor-tracker-link", title: "Revisit Past Runs", description: "Every completed run is saved here so you can revisit past reports." },
+];
+
+function computeTourTooltipPosition(anchorRect, cardW, cardH, margin = 12) {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+
+  if (!anchorRect) {
+    // Anchor not currently mounted (e.g. off on another tab) — park near the top-left rather
+    // than crash; the tour still advances, it just won't visually point at anything that step.
+    return { top: margin, left: margin };
+  }
+
+  let top = anchorRect.bottom + 10;
+  let left = anchorRect.left;
+
+  // Flip above the anchor if there's no room below.
+  if (top + cardH + margin > vh) {
+    top = anchorRect.top - cardH - 10;
+  }
+
+  // Clamp into the viewport on all sides — basic collision handling, not pixel-perfect.
+  if (left + cardW + margin > vw) left = vw - cardW - margin;
+  if (left < margin) left = margin;
+  if (top + cardH + margin > vh) top = vh - cardH - margin;
+  if (top < margin) top = margin;
+
+  return { top, left };
+}
+
+function WalkthroughTour({ step, onNext, onBack, onClose }) {
+  const cardRef = useRef(null);
+  const [pos, setPos] = useState(null);
+  const s = TOUR_STEPS[step];
+
+  useLayoutEffect(() => {
+    const reposition = () => {
+      const current = TOUR_STEPS[step];
+      const anchor = current ? document.getElementById(current.anchorId) : null;
+      const anchorRect = anchor ? anchor.getBoundingClientRect() : null;
+      const cardW = cardRef.current?.offsetWidth || 320;
+      const cardH = cardRef.current?.offsetHeight || 160;
+      setPos(computeTourTooltipPosition(anchorRect, cardW, cardH));
+    };
+    reposition();
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [step]);
+
+  if (!s) return null;
+
+  return (
+    <div ref={cardRef} style={{ position: "fixed", top: pos?.top ?? -9999, left: pos?.left ?? -9999, width: 320, zIndex: 1000, background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 12, boxShadow: "0 12px 32px rgba(15,23,42,0.2)", padding: 18, transition: "top 0.15s ease, left 0.15s ease" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: COLORS.blue }}>Step {step + 1} of {TOUR_STEPS.length}</div>
+        <button onClick={onClose} aria-label="Close tour" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, color: COLORS.muted, lineHeight: 1, padding: 0 }}>✕</button>
+      </div>
+      <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.text, marginBottom: 6 }}>{s.title}</div>
+      <div style={{ fontSize: 12, color: COLORS.sub, lineHeight: 1.5, marginBottom: 16 }}>{s.description}</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <button onClick={onBack} disabled={step === 0}
+          style={{ padding: "6px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: step === 0 ? "not-allowed" : "pointer", background: "none", color: step === 0 ? "#CBD5E1" : COLORS.sub, border: `1px solid ${COLORS.border}` }}>
+          ← Back
+        </button>
+        <button onClick={onNext} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", background: COLORS.blue, color: "white", border: "none" }}>
+          {step === TOUR_STEPS.length - 1 ? "Finish" : "Next →"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 async function saveDealPacketToFirestore(uid, fileName, content) {
   if (!uid) {
     console.warn("DealGuard: no signed-in user; skipping deal packet save to Firestore.");
@@ -933,29 +1438,12 @@ async function saveReportToFirestore(uid, dealId, data) {
   }
 }
 
-function LiveView({ analystName, uid }) {
+function LiveView({ analystName, uid, onGoTracker, onStartTour, hasSeenTour }) {
   const [jsonInput, setJsonInput] = useState("");
   const [status, setStatus] = useState("idle");
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [elapsed, setElapsed] = useState(0);
-  const [selectedCategories, setSelectedCategories] = useState({
-    customer_concentration: true,
-    owner_dependency: true,
-    operational_sop: true,
-    employee_culture: true,
-  });
-
-  const toggleCategory = (cat) => {
-    setSelectedCategories(prev => ({ ...prev, [cat]: !prev[cat] }));
-  };
-
-  const categoryConfig = [
-    { key: "customer_concentration", label: "Customer Concentration", icon: "👥", required: "customer_revenue_csv", description: "Revenue CSV required" },
-    { key: "owner_dependency", label: "Owner Dependency", icon: "🔑", required: "owner_interview_transcript", description: "Interview transcript required" },
-    { key: "operational_sop", label: "SOP / Process Risk", icon: "📋", required: "sop_documents", description: "SOP documents required" },
-    { key: "employee_culture", label: "Employee & Culture", icon: "🏢", required: "employee_roster", description: "Employee roster required" },
-  ];
 
   const handleSend = async () => {
     let parsed;
@@ -963,16 +1451,6 @@ function LiveView({ analystName, uid }) {
       parsed = JSON.parse(jsonInput);
     } catch (e) {
       setErrorMsg("Invalid JSON — please check your input and try again.");
-      setStatus("error");
-      return;
-    }
-
-    const activeCategories = Object.entries(selectedCategories)
-      .filter(([_, v]) => v)
-      .map(([k]) => k);
-
-    if (activeCategories.length === 0) {
-      setErrorMsg("Please select at least one DD category to run.");
       setStatus("error");
       return;
     }
@@ -993,7 +1471,7 @@ function LiveView({ analystName, uid }) {
           ...parsed,
           analyst_name: analystName,
           analyst_email: `${analystName.toLowerCase().replace(/\s/g, ".")}@dealguard.com`,
-          selected_categories: activeCategories,
+          selected_categories: ALL_DD_CATEGORIES,
         }),
       });
       clearInterval(interval);
@@ -1046,72 +1524,92 @@ function LiveView({ analystName, uid }) {
     setJsonInput(JSON.stringify(example, null, 2));
   };
 
-  const activeCount = Object.values(selectedCategories).filter(Boolean).length;
+  const hasInput = jsonInput.trim().length > 0;
 
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: 28, display: "flex", flexDirection: "column", gap: 20 }}>
-      <div>
-        <div style={{ fontSize: 22, fontWeight: 700, color: COLORS.text, marginBottom: 4 }}>Live Analysis</div>
-        <div style={{ fontSize: 12, color: COLORS.muted }}>Submit a real deal packet to the DealGuard agent. Select which DD categories to run — useful when not all documents are available yet.</div>
+      {/* WORKSPACE HEADER */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16 }}>
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: COLORS.muted, marginBottom: 6 }}>Operations · Deal Intake</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: COLORS.text, marginBottom: 4 }}>Live Analysis</div>
+          <div style={{ fontSize: 12, color: COLORS.muted }}>Upload a deal packet and DealGuard analyzes it across all 5 risk categories, returning a fully sourced report.</div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, flexShrink: 0 }}>
+          {onGoTracker && (
+            <button id="tour-anchor-tracker-link" onClick={onGoTracker} style={{ padding: 0, background: "none", border: "none", cursor: "pointer", fontSize: 11, fontWeight: 600, color: COLORS.blue }}>
+              View past runs in Tracker →
+            </button>
+          )}
+          {onStartTour && (
+            <button onClick={onStartTour} style={{ padding: 0, background: "none", border: "none", cursor: "pointer", fontSize: 11, fontWeight: 600, color: COLORS.muted }}>
+              {hasSeenTour ? "↻ Retake the tour" : "✦ Take a quick tour"}
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* CATEGORY SELECTOR */}
-      <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 20 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.text }}>DD Categories to Run</div>
-          <div style={{ fontSize: 11, color: COLORS.muted }}>{activeCount} of 4 selected</div>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
-          {categoryConfig.map(cat => {
-            const active = selectedCategories[cat.key];
-            return (
-              <div key={cat.key} onClick={() => toggleCategory(cat.key)}
-                style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 8, cursor: "pointer", background: active ? "rgba(79,70,229,0.07)" : COLORS.card2, border: `1px solid ${active ? COLORS.blue : COLORS.border}`, transition: "all 0.15s" }}>
-                <div style={{ width: 16, height: 16, borderRadius: 4, border: `2px solid ${active ? COLORS.blue : COLORS.muted}`, background: active ? COLORS.blue : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}>
-                  {active && <span style={{ color: "white", fontSize: 10, fontWeight: 700 }}>✓</span>}
-                </div>
-                <div style={{ fontSize: 14 }}>{cat.icon}</div>
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: active ? COLORS.text : COLORS.muted }}>{cat.label}</div>
-                  <div style={{ fontSize: 10, color: COLORS.muted, marginTop: 2 }}>{cat.description}</div>
-                </div>
-                {!active && (
-                  <div style={{ marginLeft: "auto", fontSize: 10, color: COLORS.muted, fontStyle: "italic" }}>Skipped</div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        {activeCount < 4 && (
-          <div style={{ marginTop: 12, padding: "8px 12px", background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.2)", borderRadius: 6, fontSize: 11, color: COLORS.amber }}>
-            ⚠ Partial analysis — {4 - activeCount} categor{4 - activeCount === 1 ? "y" : "ies"} skipped. Missing categories will be marked incomplete in the report.
+      {/* CAPABILITY BADGES */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {LIVE_CAPABILITY_BADGES.map(b => (
+          <div key={b} style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: 20, border: `1px solid ${COLORS.border}`, color: COLORS.sub, background: COLORS.card }}>
+            {b}
           </div>
-        )}
+        ))}
+      </div>
+
+      {/* WHAT WE ANALYZE — read-only, all 5 categories always run */}
+      <div id="tour-anchor-chips" style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 20 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: COLORS.muted, marginBottom: 14 }}>What We Analyze</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
+          {LIVE_CATEGORY_CHIPS.map(cat => (
+            <div key={cat.key} style={{ display: "flex", flexDirection: "column", gap: 4, padding: "12px 14px", borderRadius: 8, background: COLORS.card2, border: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontSize: 16 }}>{cat.icon}</div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: COLORS.text }}>{cat.label}</div>
+              <div style={{ fontSize: 10, color: COLORS.muted, lineHeight: 1.4 }}>{cat.description}</div>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* JSON INPUT */}
-      <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 24 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.text }}>Deal Packet JSON</div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={loadExample} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", background: COLORS.card2, color: COLORS.sub, border: `1px solid ${COLORS.border}` }}>Load Example</button>
-            <label style={{ padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", background: COLORS.card2, color: COLORS.sub, border: `1px solid ${COLORS.border}` }}>
+      <div id="tour-anchor-jsoncard" style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 24 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 15 }}>📄</span>
+            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.text }}>Deal Packet JSON</div>
+          </div>
+          <div style={{ display: "flex", border: `1px solid ${COLORS.border}`, borderRadius: 6, overflow: "hidden", flexShrink: 0 }}>
+            <button onClick={loadExample} style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, cursor: "pointer", background: COLORS.card2, color: COLORS.sub, border: "none", borderRight: `1px solid ${COLORS.border}` }}>Load Example</button>
+            <label style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, cursor: "pointer", background: COLORS.card2, color: COLORS.sub, border: "none" }}>
               Upload JSON <input type="file" accept=".json" onChange={handleFileUpload} style={{ display: "none" }} />
             </label>
           </div>
         </div>
-        <textarea
-          value={jsonInput}
-          onChange={e => setJsonInput(e.target.value)}
-          placeholder='Paste your deal packet JSON here, or click "Load Example" to use the test deal...'
-          style={{ width: "100%", height: 240, background: COLORS.card2, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 14, color: COLORS.text, fontSize: 11, fontFamily: "monospace", outline: "none", resize: "vertical", lineHeight: 1.6 }}
-        />
+        <div style={{ fontSize: 11, color: COLORS.muted, marginBottom: 16 }}>Paste your deal packet JSON, or upload a file — see field reference in Load Example.</div>
+        <div style={{ position: "relative" }}>
+          <textarea
+            value={jsonInput}
+            onChange={e => setJsonInput(e.target.value)}
+            style={{ width: "100%", height: 240, background: hasInput ? COLORS.card2 : "rgba(248,250,252,0.6)", border: `1.5px dashed ${hasInput ? COLORS.border : "#CBD5E1"}`, borderRadius: 8, padding: 14, color: COLORS.text, fontSize: 11, fontFamily: "monospace", outline: "none", resize: "vertical", lineHeight: 1.6, transition: "border-color 0.15s, background 0.15s" }}
+          />
+          {!hasInput && (
+            <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, pointerEvents: "none" }}>
+              <div style={{ fontSize: 26, opacity: 0.6 }}>📄</div>
+              <div style={{ fontSize: 12, color: COLORS.muted, fontWeight: 600 }}>Paste deal packet JSON here</div>
+              <div style={{ fontSize: 11, color: COLORS.muted }}>or click "Load Example" above to use a test deal</div>
+            </div>
+          )}
+        </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12 }}>
-          <div style={{ fontSize: 11, color: COLORS.muted }}>
-            Analyst: <span style={{ color: COLORS.blue, fontWeight: 600 }}>{analystName}</span> · Running: <span style={{ color: COLORS.blue, fontWeight: 600 }}>{activeCount} categor{activeCount === 1 ? "y" : "ies"}</span>
+          <div>
+            <div style={{ fontSize: 11, color: COLORS.muted }}>
+              Analyst: <span style={{ color: COLORS.blue, fontWeight: 600 }}>{analystName}</span>
+            </div>
+            <div style={{ fontSize: 10, color: COLORS.muted, marginTop: 2 }}>Running all 5 risk categories</div>
           </div>
-          <button onClick={handleSend} disabled={status === "sending" || !jsonInput.trim() || activeCount === 0}
-            style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: status === "sending" || !jsonInput.trim() || activeCount === 0 ? "not-allowed" : "pointer", background: status === "sending" || activeCount === 0 ? COLORS.card2 : COLORS.blue, color: status === "sending" || activeCount === 0 ? COLORS.muted : "white", border: "none", transition: "all 0.2s" }}>
+          <button id="tour-anchor-send" onClick={handleSend} disabled={status === "sending" || !hasInput}
+            style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: status === "sending" || !hasInput ? "not-allowed" : "pointer", background: status === "sending" || !hasInput ? COLORS.card2 : COLORS.blue, color: status === "sending" || !hasInput ? COLORS.muted : "white", border: "none", transition: "all 0.2s" }}>
             {status === "sending" ? `⟳ Running — ${elapsed}s` : `Send to DealGuard →`}
           </button>
         </div>
@@ -1159,10 +1657,11 @@ function LiveView({ analystName, uid }) {
 }
 
 // ── LIVE TRACKER ──────────────────────────────────────────────────────────────
-function LiveTrackerView({ uid, onGoLive }) {
+// Shared data source for both Tracker and Compare — one Firestore subscription, read in two
+// places, rather than each view wiring up its own query.
+function useRunHistory(uid) {
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState(null);
 
   useEffect(() => {
     if (!uid) {
@@ -1179,6 +1678,7 @@ function LiveTrackerView({ uid, onGoLive }) {
           id: d.id,
           company: data.targetCompany || data.dealId || d.id,
           time: data.createdAt?.toDate ? data.createdAt.toDate().toLocaleString() : "",
+          timestamp: data.createdAt?.toDate ? data.createdAt.toDate().getTime() : 0,
           severity: data.severityCounts || { critical: 0, high: 0, medium: 0, low: 0 },
           status: "complete",
           posture: data.posture || "unknown",
@@ -1193,6 +1693,13 @@ function LiveTrackerView({ uid, onGoLive }) {
     });
     return unsubscribe;
   }, [uid]);
+
+  return { runs, loading };
+}
+
+function LiveTrackerView({ uid, onGoLive }) {
+  const { runs, loading } = useRunHistory(uid);
+  const [selectedId, setSelectedId] = useState(null);
 
   useEffect(() => {
     if (runs.length > 0 && !runs.some(r => r.id === selectedId)) {
@@ -1243,6 +1750,180 @@ function LiveTrackerView({ uid, onGoLive }) {
   );
 }
 
+// ── COMPARE ───────────────────────────────────────────────────────────────────
+const COMPARE_COLUMNS = [
+  { key: "company", label: "Company Name" },
+  { key: "time", label: "Date" },
+  { key: "posture", label: "Posture" },
+  { key: "critical", label: "Critical" },
+  { key: "high", label: "High" },
+  { key: "confidence", label: "Confidence %" },
+  { key: "findingsTotal", label: "Findings Total" },
+];
+
+function CompareStatTile({ label, value }) {
+  return (
+    <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 16 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: COLORS.muted, marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 700, color: COLORS.text, fontFamily: "monospace" }}>{value}</div>
+    </div>
+  );
+}
+
+function csvCell(value) {
+  return `"${String(value ?? "").replace(/"/g, '""')}"`;
+}
+
+function ComparisonView({ uid, onGoLive }) {
+  const { runs, loading } = useRunHistory(uid);
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState("timestamp");
+  const [sortDir, setSortDir] = useState("desc");
+
+  if (loading) {
+    return (
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, color: COLORS.muted }}>
+        Loading past runs…
+      </div>
+    );
+  }
+
+  if (runs.length < 2) {
+    return (
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ textAlign: "center", maxWidth: 380 }}>
+          <div style={{ fontSize: 32, marginBottom: 12 }}>📊</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.text, marginBottom: 6 }}>Not enough runs to compare</div>
+          <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 20, lineHeight: 1.6 }}>Run at least 2 deals to see a side-by-side comparison.</div>
+          <button onClick={onGoLive} style={{ padding: "10px 20px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", background: COLORS.blue, color: "white", border: "none" }}>Go to Live Analysis →</button>
+        </div>
+      </div>
+    );
+  }
+
+  // Enrich each run once with the derived confidence score and a true findings total (the
+  // stored severityCounts predate the Risk Matrix/confidence work for older runs, so recompute
+  // from the stored report itself rather than trusting a possibly-stale summary field).
+  const enriched = runs.map(r => {
+    const rd = parseReportData(r.report);
+    const confidence = rd && !rd.incomplete ? computeReportConfidence(rd.parsed) : null;
+    const findingsTotal = rd && !rd.incomplete ? rd.findings.length : (r.severity.critical + r.severity.high + r.severity.medium + r.severity.low);
+    return { ...r, confidence, findingsTotal };
+  });
+
+  const filtered = enriched.filter(r => r.company.toLowerCase().includes(search.toLowerCase()));
+
+  const sortValue = (r, key) => {
+    switch (key) {
+      case "company": return r.company.toLowerCase();
+      case "time": return r.timestamp;
+      case "posture": return r.posture;
+      case "critical": return r.severity.critical;
+      case "high": return r.severity.high;
+      case "confidence": return r.confidence ?? -1;
+      case "findingsTotal": return r.findingsTotal;
+      default: return 0;
+    }
+  };
+  const sorted = [...filtered].sort((a, b) => {
+    const av = sortValue(a, sortKey), bv = sortValue(b, sortKey);
+    if (av < bv) return sortDir === "asc" ? -1 : 1;
+    if (av > bv) return sortDir === "asc" ? 1 : -1;
+    return 0;
+  });
+  const toggleSort = (key) => {
+    if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
+    else { setSortKey(key); setSortDir("asc"); }
+  };
+
+  const totalDeals = filtered.length;
+  const avgFindings = totalDeals > 0 ? (filtered.reduce((sum, r) => sum + r.findingsTotal, 0) / totalDeals).toFixed(1) : "0";
+  const postureCounts = {};
+  filtered.forEach(r => { postureCounts[r.posture] = (postureCounts[r.posture] || 0) + 1; });
+  const mostCommonPostureKey = Object.entries(postureCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
+  const mostCommonPosture = mostCommonPostureKey ? (REPORT_POSTURE_CONFIG[mostCommonPostureKey]?.label || mostCommonPostureKey) : "—";
+  const highestRiskDeal = filtered.length > 0 ? [...filtered].sort((a, b) => b.severity.critical - a.severity.critical)[0] : null;
+
+  const exportCSV = () => {
+    const rows = sorted.map(r => [
+      r.company, r.time, REPORT_POSTURE_CONFIG[r.posture]?.label || r.posture,
+      r.severity.critical, r.severity.high, r.confidence ?? "", r.findingsTotal,
+    ]);
+    const csv = [COMPARE_COLUMNS.map(c => csvCell(c.label)), ...rows.map(row => row.map(csvCell))]
+      .map(row => row.join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "dealguard_comparison.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div style={{ flex: 1, overflowY: "auto", padding: 28, display: "flex", flexDirection: "column", gap: 20 }}>
+      <div>
+        <div style={{ fontSize: 22, fontWeight: 700, color: COLORS.text, marginBottom: 4 }}>Compare Deals</div>
+        <div style={{ fontSize: 12, color: COLORS.muted }}>Side-by-side view across your completed analysis runs.</div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+        <CompareStatTile label="Total Deals Compared" value={totalDeals} />
+        <CompareStatTile label="Avg Findings / Deal" value={avgFindings} />
+        <CompareStatTile label="Most Common Posture" value={mostCommonPosture} />
+        <CompareStatTile label="Highest Risk Deal" value={highestRiskDeal ? highestRiskDeal.company : "—"} />
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by company name…"
+          style={{ flex: 1, maxWidth: 320, padding: "8px 12px", borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 12, outline: "none", background: COLORS.card, color: COLORS.text }} />
+        <button onClick={exportCSV} style={{ padding: "8px 16px", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", background: COLORS.card2, color: COLORS.sub, border: `1px solid ${COLORS.border}`, flexShrink: 0 }}>
+          Export CSV
+        </button>
+      </div>
+
+      <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: COLORS.card2 }}>
+                {COMPARE_COLUMNS.map(col => (
+                  <th key={col.key} onClick={() => toggleSort(col.key)}
+                    style={{ padding: "10px 14px", textAlign: "left", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: COLORS.muted, cursor: "pointer", userSelect: "none", borderBottom: `1px solid ${COLORS.border}`, whiteSpace: "nowrap" }}>
+                    {col.label}{sortKey === col.key ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map(r => {
+                const pcfg = REPORT_POSTURE_CONFIG[r.posture] || REPORT_POSTURE_CONFIG.unknown;
+                return (
+                  <tr key={r.id} style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+                    <td style={{ padding: "10px 14px", fontSize: 12, color: COLORS.text, fontWeight: 600, whiteSpace: "nowrap" }}>{r.company}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 11, color: COLORS.muted, whiteSpace: "nowrap" }}>{r.time}</td>
+                    <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: pcfg.bg, color: pcfg.color }}>{pcfg.label}</span>
+                    </td>
+                    <td style={{ padding: "10px 14px", fontSize: 12, color: COLORS.red, fontWeight: 700 }}>{r.severity.critical}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12, color: COLORS.amber, fontWeight: 700 }}>{r.severity.high}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12, color: COLORS.text }}>{r.confidence !== null && r.confidence !== undefined ? `${r.confidence}%` : "—"}</td>
+                    <td style={{ padding: "10px 14px", fontSize: 12, color: COLORS.text }}>{r.findingsTotal}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {sorted.length === 0 && (
+          <div style={{ padding: 24, textAlign: "center", fontSize: 12, color: COLORS.muted }}>No deals match "{search}".</div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // ── RUN MONITOR ───────────────────────────────────────────────────────────────
 function RunMonitorView({ analystName }) {
@@ -1514,14 +2195,121 @@ function AuthScreen({ onAuthenticated, initialMode }) {
   );
 }
 
+// ── GUIDE ─────────────────────────────────────────────────────────────────────
+// Answers reflect what's actually true about DealGuard as built — the 5 categories, the
+// specific severity examples that exist in the codebase (customer concentration thresholds,
+// SOP coverage), the derived (not AI-reported) confidence score, and the real Firestore
+// persistence — rather than inventing capabilities or overclaiming data handling.
+const GUIDE_FAQS = [
+  {
+    q: "What is DealGuard?",
+    a: "DealGuard is an operational due diligence agent for buy-side M&A analysts. You submit a deal packet (revenue detail, an owner interview, SOP documents, an employee roster, site notes, and a company website) and it runs an automated red-flag risk analysis across 5 categories, returning a sourced report with findings, severity ratings, suggested LOI clauses, and a confidence indicator.",
+  },
+  {
+    q: "What documents do I need before running an analysis?",
+    a: "Ideally: customer revenue detail by account, an owner interview transcript, an org chart, written SOPs, an employee roster (with tenure, compensation, and non-compete status), site visit notes, and the company's website URL. None of these are strictly required to start a run — if something's missing, that category shows up in the report's missing_categories and the Suggested Document Requests section, and the confidence score reflects the gap.",
+  },
+  {
+    q: "What are the 5 risk categories and what does each one check?",
+    a: "Customer Concentration (revenue mix and contract terms), Owner Dependency (replacement cost and succession risk), SOP / Process Risk (documented workflows and continuity), Employee & Culture (roster, tenure, and retention risk), and Web Research (public signal and online footprint). Every live run always covers all 5 — there's no way to deselect a category.",
+  },
+  {
+    q: "How are severity levels (critical/high/medium/low) determined?",
+    a: "Severity is assigned per finding based on category-specific thresholds. For example, a single customer above 25% of trailing revenue triggers at least a High finding tied to the LOI protection clause, and above roughly 40% triggers escalation to human review as a deal-killer-level Critical. For SOP coverage, fewer than 3 of 5 critical workflows being documented is treated as a High finding. Similar category-specific rules apply to owner dependency and employee/culture risk.",
+  },
+  {
+    q: "What does \"confidence\" mean on a report?",
+    a: "The confidence badge next to the deal posture is not an AI-reported self-assessment — it's computed client-side from data completeness: it starts at 100, subtracts 15 if human escalation was required, subtracts up to 40 for missing categories, and subtracts 3 for each High/Critical finding that rests on a null source reference, floored at 40. Individual findings can also carry their own confidence value when the underlying data includes one, shown as a separate small badge on that finding.",
+  },
+  {
+    q: "Can I run a partial analysis if I'm missing some documents?",
+    a: "You can't deselect categories up front anymore — every run always analyzes all 5. But you can absolutely run with incomplete data: whatever documents you don't have simply show up as missing categories in the report, the Suggested Document Requests section tells you what to go get, and the confidence score is reduced to reflect the gap rather than the run failing.",
+  },
+  {
+    q: "What's the difference between Demo mode and Live mode?",
+    a: "Demo mode shows pre-built, static sample deals so you can explore the report layout and UI without needing real data or a live analysis run. Live mode submits an actual deal packet to the DealGuard analysis engine and returns a real, freshly generated sourced report.",
+  },
+  {
+    q: "How long does a live analysis take?",
+    a: "Typically 2-3 minutes for a complete run across all 5 categories.",
+  },
+  {
+    q: "Where can I see past runs?",
+    a: "The Tracker tab lists every completed run and lets you reopen its full report. The Compare tab shows multiple completed runs side by side in a sortable table, once you have at least 2.",
+  },
+  {
+    q: "Is my deal data stored or shared?",
+    a: "Yes, it's stored — uploaded deal packets and generated reports are saved to Firestore under your own account, so they persist across sessions and power the Tracker/Compare views. They aren't shared with other DealGuard users. Beyond that, the analysis workflow itself also saves a copy to Google Drive and emails the completion notice to the analyst who ran it. There's currently no self-serve data deletion or retention policy built into the app — treat anything you submit as retained indefinitely for now.",
+  },
+];
+
+function GuideView({ onStartTour }) {
+  const [search, setSearch] = useState("");
+  const [openQuestion, setOpenQuestion] = useState(null);
+
+  const filtered = GUIDE_FAQS.filter(item => item.q.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div style={{ flex: 1, overflowY: "auto", padding: 28, display: "flex", flexDirection: "column", gap: 16, maxWidth: 760 }}>
+      <div>
+        <div style={{ fontSize: 22, fontWeight: 700, color: COLORS.text, marginBottom: 4 }}>Guide</div>
+        <div style={{ fontSize: 12, color: COLORS.muted }}>Answers to common questions about how DealGuard works.</div>
+      </div>
+
+      {onStartTour && (
+        <button onClick={onStartTour} style={{ alignSelf: "flex-start", padding: 0, background: "none", border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600, color: COLORS.blue }}>
+          ✦ Take the guided tour instead →
+        </button>
+      )}
+
+      <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search questions…"
+        style={{ padding: "10px 14px", borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 13, outline: "none", background: COLORS.card, color: COLORS.text }} />
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {filtered.map(item => {
+          const isOpen = openQuestion === item.q;
+          return (
+            <div key={item.q} style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden" }}>
+              <div onClick={() => setOpenQuestion(isOpen ? null : item.q)}
+                style={{ padding: "14px 18px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, cursor: "pointer" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.text }}>{item.q}</div>
+                <div style={{ fontSize: 11, color: COLORS.muted, flexShrink: 0 }}>{isOpen ? "▲" : "▼"}</div>
+              </div>
+              {isOpen && (
+                <div style={{ padding: "0 18px 16px", fontSize: 12, color: COLORS.sub, lineHeight: 1.6 }}>{item.a}</div>
+              )}
+            </div>
+          );
+        })}
+        {filtered.length === 0 && (
+          <div style={{ fontSize: 12, color: COLORS.muted, padding: "20px 0", textAlign: "center" }}>No questions match "{search}".</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── APP ───────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [mode, setMode] = useState("demo"); // demo | live | tracker
+  const [mode, setMode] = useState("live"); // demo | live | tracker | compare | guide
   const [view, setView] = useState("deals"); // deals | monitor
   const [selectedDeal, setSelectedDeal] = useState(mockDeals[0]);
   const [firebaseUser, setFirebaseUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authMode] = useState(() => new URLSearchParams(window.location.search).get("mode"));
+
+  // Walkthrough tour — session-only state, never persisted, never auto-launched. Lives here
+  // (rather than inside LiveView) so it can be triggered from anywhere, e.g. the Guide page.
+  const [tourActive, setTourActive] = useState(false);
+  const [tourStep, setTourStep] = useState(0);
+  const [hasSeenTour, setHasSeenTour] = useState(false);
+  const startTour = () => { setMode("live"); setTourStep(0); setTourActive(true); setHasSeenTour(true); };
+  const closeTour = () => setTourActive(false);
+  const nextTourStep = () => setTourStep(s => {
+    if (s >= TOUR_STEPS.length - 1) { setTourActive(false); return s; }
+    return s + 1;
+  });
+  const backTourStep = () => setTourStep(s => Math.max(0, s - 1));
 
   const toPlainUser = (u) => (u ? { uid: u.uid, displayName: u.displayName, email: u.email } : null);
   const syncUser = () => setFirebaseUser(toPlainUser(auth.currentUser));
@@ -1580,14 +2368,15 @@ export default function App() {
           <div style={{ width: 1, height: 20, background: COLORS.border }} />
           <div style={{ fontSize: 12, fontWeight: 500, color: COLORS.sub }}>Operational Due Diligence Agent</div>
 
-          {/* DEMO / LIVE TOGGLE */}
+          {/* LIVE / TRACKER / COMPARE / GUIDE TOGGLE — Demo lives as a small button, bottom-left */}
           <div style={{ marginLeft: 8, display: "flex", background: COLORS.card2, borderRadius: 8, border: `1px solid ${COLORS.border}`, overflow: "hidden" }}>
-            <button onClick={() => setMode("demo")} style={{ padding: "5px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", border: "none", background: mode === "demo" ? "rgba(100,116,139,0.3)" : "transparent", color: mode === "demo" ? COLORS.sub : COLORS.muted, transition: "all 0.15s", letterSpacing: "0.05em" }}>DEMO</button>
             <button onClick={() => setMode("live")} style={{ padding: "5px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", border: "none", background: mode === "live" ? "rgba(16,185,129,0.2)" : "transparent", color: mode === "live" ? COLORS.green : COLORS.muted, transition: "all 0.15s", letterSpacing: "0.05em" }}>
               {mode === "live" && <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: COLORS.green, marginRight: 5, animation: "pulse 2s infinite", verticalAlign: "middle" }} />}
               LIVE
             </button>
             <button onClick={() => setMode("tracker")} style={{ padding: "5px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", border: "none", background: mode === "tracker" ? "rgba(79,70,229,0.15)" : "transparent", color: mode === "tracker" ? COLORS.blue : COLORS.muted, transition: "all 0.15s", letterSpacing: "0.05em" }}>TRACKER</button>
+            <button onClick={() => setMode("compare")} style={{ padding: "5px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", border: "none", background: mode === "compare" ? "rgba(79,70,229,0.15)" : "transparent", color: mode === "compare" ? COLORS.blue : COLORS.muted, transition: "all 0.15s", letterSpacing: "0.05em" }}>COMPARE</button>
+            <button onClick={() => setMode("guide")} style={{ padding: "5px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", border: "none", background: mode === "guide" ? "rgba(79,70,229,0.15)" : "transparent", color: mode === "guide" ? COLORS.blue : COLORS.muted, transition: "all 0.15s", letterSpacing: "0.05em" }}>GUIDE</button>
           </div>
         </div>
 
@@ -1627,9 +2416,19 @@ export default function App() {
         {/* CONTENT */}
         {mode === "demo" && view === "deals" && selectedDeal && <DealReport deal={selectedDeal} analystName={analystName} />}
         {mode === "demo" && view === "monitor" && <RunMonitorView analystName={analystName} />}
-        {mode === "live" && <LiveView analystName={analystName} uid={firebaseUser?.uid} />}
+        {mode === "live" && <LiveView analystName={analystName} uid={firebaseUser?.uid} onGoTracker={() => setMode("tracker")} onStartTour={startTour} hasSeenTour={hasSeenTour} />}
         {mode === "tracker" && <LiveTrackerView uid={firebaseUser?.uid} onGoLive={() => setMode("live")} />}
+        {mode === "compare" && <ComparisonView uid={firebaseUser?.uid} onGoLive={() => setMode("live")} />}
+        {mode === "guide" && <GuideView onStartTour={startTour} />}
       </div>
+
+      {/* DEMO ENTRY POINT — small, out of the way, not competing with the LIVE/TRACKER/etc tabs */}
+      <button id="tour-anchor-nav" onClick={() => setMode("demo")}
+        style={{ position: "fixed", left: 16, bottom: 16, padding: "6px 14px", borderRadius: 20, fontSize: 11, fontWeight: 700, cursor: "pointer", background: mode === "demo" ? "rgba(100,116,139,0.3)" : COLORS.card, color: mode === "demo" ? COLORS.sub : COLORS.muted, border: `1px solid ${COLORS.border}`, boxShadow: "0 2px 8px rgba(15,23,42,0.08)", letterSpacing: "0.05em", zIndex: 40 }}>
+        DEMO
+      </button>
+
+      {tourActive && <WalkthroughTour step={tourStep} onNext={nextTourStep} onBack={backTourStep} onClose={closeTour} />}
     </div>
   );
 }
