@@ -8,8 +8,20 @@ import {
   signOut,
 } from "firebase/auth";
 import { doc, setDoc, serverTimestamp, collection, query, orderBy, onSnapshot } from "firebase/firestore";
+import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
+
+GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
 
 const WEBHOOK_URL = "https://merge-works.app.n8n.cloud/webhook/dealguard-intake";
+const REPORT_STATUS_URL = "https://merge-works.app.n8n.cloud/webhook/dealguard-report-status";
+// n8n's intake webhook now responds immediately and keeps running the analysis in the
+// background (it used to hold the connection open for the full run, but that regularly
+// exceeded the ~100s timeout enforced by the infrastructure in front of n8n, well short of the
+// workflow's actual 2-5 minute runtime). The frontend polls this second endpoint instead, which
+// just checks whether the report file has shown up yet — each check is fast regardless of how
+// long the underlying analysis takes, so there's nothing here for that limit to cut off.
+const REPORT_POLL_INTERVAL_MS = 5000;
+const REPORT_POLL_TIMEOUT_MS = 8 * 60 * 1000;
 
 const COLORS = {
   bg: "linear-gradient(135deg, #EEF2FF 0%, #F8FAFF 100%)",
@@ -726,6 +738,14 @@ function parseReportData(report) {
   // Handle both direct report and wrapped in array
   let r = Array.isArray(report) ? report[0] : report;
 
+  // n8n's completed-run shape is { success, status, message, report_generated, report: {...} } —
+  // unwrap to the actual report before anything else, otherwise the always-present top-level
+  // "message" field below gets mistaken for the raw_response/error fallback and a real,
+  // successful report renders as the generic "check Google Drive" message instead.
+  if (r && typeof r === "object" && r.report && typeof r.report === "object") {
+    r = r.report;
+  }
+
   // Handle text field from n8n
   let parsed = r;
   if (r?.text) {
@@ -1312,6 +1332,135 @@ const LIVE_CATEGORY_CHIPS = [
 
 const LIVE_CAPABILITY_BADGES = ["5 Risk Categories", "Sourced Evidence", "Partial Data OK", "~2-3 Min Average Runtime"];
 
+// Each maps 1:1 to a plain-text field the n8n intake workflow parses (CSV split, keyword
+// matching, etc.) — a PDF upload for any of these is text-extracted client-side first so the
+// workflow never has to know the source was a PDF instead of pasted text.
+const DEAL_DOCUMENT_FIELDS = [
+  { key: "customer_revenue_csv", label: "Customer Revenue", hint: "CSV of customer names & revenue — paste, or upload a PDF/CSV.", placeholder: "customer,revenue\nAcme Corp,150000\n…" },
+  { key: "owner_interview_transcript", label: "Owner Interview", hint: "Interview transcript or notes — paste, or upload a PDF/text file.", placeholder: "Owner handles all customer relationships personally…" },
+  { key: "org_chart", label: "Org Chart", hint: "Reporting lines & key roles — paste, or upload a PDF.", placeholder: "Owner/CEO: handles all customer relationships…" },
+  { key: "sop_documents", label: "SOP Documents", hint: "Documented (or undocumented) operating procedures — paste, or upload a PDF.", placeholder: "Job scheduling: whiteboard and spreadsheet system…" },
+  { key: "employee_roster", label: "Employee Roster", hint: "CSV roster — paste, or upload a PDF/CSV.", placeholder: "name,role,department,tenure_years,salary_annual,has_noncompete\n…" },
+  { key: "site_visit_notes", label: "Site Visit Notes", hint: "Free-form notes from the on-site visit — paste, or upload a PDF.", placeholder: "Office is a converted garage…" },
+];
+
+async function extractTextFromFile(file) {
+  const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+  if (!isPdf) return file.text();
+
+  const buffer = await file.arrayBuffer();
+  const pdf = await getDocument({ data: buffer }).promise;
+  const pageTexts = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    // pdf.js splits a page into text runs, not lines — item.hasEOL marks the runs that end a
+    // line. Joining runs with a plain space (dropping hasEOL) collapses every line in a page
+    // into one string, which breaks anything that reads line-by-line (label: value pairs, CSV
+    // rows) downstream.
+    let pageText = "";
+    for (const item of content.items) {
+      pageText += item.str + (item.hasEOL ? "\n" : " ");
+    }
+    pageTexts.push(pageText.trim());
+  }
+  return pageTexts.join("\n").trim();
+}
+
+// Best-effort auto-sort for a dropped file: filename keywords are checked first (real data
+// rooms tend to name files descriptively), then a CSV-header shortcut, then a keyword tally
+// over the document body. This is a guess, not a guarantee — the category is always shown as
+// an editable dropdown next to the document so a wrong guess is a one-click fix, not a re-upload.
+const DOCUMENT_CATEGORY_SIGNALS = {
+  customer_revenue_csv: { filename: /revenue|customer.*(sales|rev)/i, content: ["revenue", "customer,revenue", "annual revenue", "sales by customer"] },
+  employee_roster: { filename: /roster|headcount|employee.?list|staff.?list/i, content: ["tenure_years", "has_noncompete", "role,department", "employee roster"] },
+  owner_interview_transcript: { filename: /interview|transcript/i, content: ["interview", "asked the owner", "owner said", "replacement cost"] },
+  org_chart: { filename: /org.?chart|organi[sz]ational.?chart|reporting.?structure/i, content: ["org chart", "reports to", "reporting line", "org structure"] },
+  sop_documents: { filename: /\bsops?\b|procedure|process.?manual|standard.?operating/i, content: ["standard operating procedure", "sop", "checklist", "documented process"] },
+  site_visit_notes: { filename: /site.?visit|walkthrough|facility.?notes/i, content: ["site visit", "on-site", "walkthrough", "observed"] },
+};
+
+function classifyDocument(fileName, text) {
+  const lowerName = (fileName || "").toLowerCase();
+  const lowerText = (text || "").toLowerCase();
+  const firstLine = lowerText.split("\n")[0] || "";
+
+  if (/\bcustomer\b.*\brevenue\b|\brevenue\b.*\bcustomer\b/.test(firstLine)) return "customer_revenue_csv";
+  if (/\btenure_years\b|\bhas_noncompete\b/.test(firstLine)) return "employee_roster";
+
+  for (const [category, signals] of Object.entries(DOCUMENT_CATEGORY_SIGNALS)) {
+    if (signals.filename.test(lowerName)) return category;
+  }
+
+  let bestCategory = null;
+  let bestScore = 0;
+  for (const [category, signals] of Object.entries(DOCUMENT_CATEGORY_SIGNALS)) {
+    const score = signals.content.reduce((acc, kw) => acc + (lowerText.includes(kw) ? 1 : 0), 0);
+    if (score > bestScore) { bestScore = score; bestCategory = category; }
+  }
+  return bestCategory || "site_visit_notes";
+}
+
+// Best-effort scrape of deal-fact values (company, deal id, industry, SDE, EV) out of an
+// uploaded document, so the top-of-form fields don't have to be retyped by hand when they're
+// already stated in the paperwork. Only ever used to fill a currently-blank field (see
+// handleDocumentFiles) — a wrong guess is never allowed to clobber something the analyst typed.
+// Anchored to the start of a line (multiline `^`) on purpose: real due-diligence documents
+// (revenue CSVs, interview transcripts, SOPs, roster files) are prose about the business, not
+// a deal cover sheet — they don't label their own deal_id/target_company/industry/SDE/EV. The
+// only place these words show up is a genuine "Label: value" line, OR incidentally mid-sentence
+// ("the plumbing industry has changed a lot..."). Requiring the label to start its own line
+// rules out the mid-sentence case almost entirely; matching anywhere in the text (the earlier
+// version) was matching prose incidentally and producing convincing-looking wrong values.
+const DEAL_FACT_STRING_PATTERNS = {
+  target_company: /^[ \t]*(?:target\s+company|company\s+name|business\s+name|client\s+name|prepared\s+for)[ \t]*[:\-][ \t]*(.{2,80})$/im,
+  deal_id: /^[ \t]*deal\s*(?:id|#|number)[ \t]*[:\-][ \t]*([A-Za-z0-9_-]{2,40})/im,
+  industry: /^[ \t]*industry[ \t]*[:\-][ \t]*(.{2,60})$/im,
+};
+const DEAL_FACT_NUMBER_PATTERNS = {
+  annual_sde: /^[ \t]*(?:annual\s+)?sde\s*(?:\(\$\))?[ \t]*[:\-][ \t]*\$?[ \t]*([\d,]{3,})/im,
+  ev: /^[ \t]*(?:enterprise\s+value|purchase\s+price|deal\s+value|ev)[ \t]*(?:\(\$\))?[ \t]*[:\-][ \t]*\$?[ \t]*([\d,]{3,})/im,
+};
+
+// A single tier here (unlike the earlier filename-guess design): every hint below comes from an
+// explicit, line-anchored label, so there's no weaker signal to arbitrate against. If a document
+// doesn't label these facts — the common case — the fields are simply left for the analyst to
+// type; a guess from the filename alone turned out to produce convincing-looking wrong company
+// names often enough that leaving the field blank is the safer default.
+function extractDealFactHints(text) {
+  const hints = {};
+  for (const [key, regex] of Object.entries(DEAL_FACT_STRING_PATTERNS)) {
+    const match = text.match(regex);
+    if (match) hints[key] = { value: match[1].trim().replace(/\s+/g, " "), tier: 2 };
+  }
+  for (const [key, regex] of Object.entries(DEAL_FACT_NUMBER_PATTERNS)) {
+    const match = text.match(regex);
+    if (match) hints[key] = { value: match[1].replace(/,/g, ""), tier: 2 };
+  }
+  return hints;
+}
+
+const DEAL_PACKET_META_KEYS = ["deal_id", "target_company", "industry", "annual_sde", "ev"];
+const DEAL_PACKET_DOC_KEYS = DEAL_DOCUMENT_FIELDS.map(f => f.key);
+
+// A single uploaded file can be a whole pre-assembled deal packet (this app's older single-file
+// JSON format) rather than one document — bundling deal_id/target_company/industry/SDE/EV
+// alongside all six document fields in one object. Recognized by an exact top-level key match,
+// not a guess, so handleDocumentFiles treats it as authoritative and fans it out into one
+// document entry per populated category instead of dumping the whole JSON text into one bucket.
+function parseWholeDealPacket(text) {
+  let obj;
+  try {
+    obj = JSON.parse(text);
+  } catch (e) {
+    return null;
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+  const hasMeta = DEAL_PACKET_META_KEYS.some(k => obj[k] !== undefined && obj[k] !== null && obj[k] !== "");
+  const hasDocs = DEAL_PACKET_DOC_KEYS.some(k => typeof obj[k] === "string" && obj[k].trim().length > 0);
+  return (hasMeta || hasDocs) ? obj : null;
+}
+
 // ── WALKTHROUGH TOUR ─────────────────────────────────────────────────────────
 // Self-contained, tooltip-driven, fully skippable. Anchors are located by DOM id (via
 // document.getElementById) rather than refs threaded through props, since the 5 anchor
@@ -1320,8 +1469,7 @@ const LIVE_CAPABILITY_BADGES = ["5 Risk Categories", "Sourced Evidence", "Partia
 // State (which step, whether it's running, whether it's been seen) lives in App so it can be
 // triggered from anywhere (Live Analysis header, Guide page) — session-only, never localStorage.
 const TOUR_STEPS = [
-  { anchorId: "tour-anchor-chips", title: "5 Risk Categories, Every Run", description: "DealGuard checks 5 risk categories every time: customer concentration, owner dependency, SOP coverage, employee & culture, and public web signal." },
-  { anchorId: "tour-anchor-jsoncard", title: "Paste or Load a Deal Packet", description: "Paste a deal packet here, or click Load Example to try a real test deal instantly." },
+  { anchorId: "tour-anchor-jsoncard", title: "Fill In or Load a Deal Packet", description: "Fill in the deal facts and upload a PDF (or paste text) for each document category — or click Load Example to try a real test deal instantly." },
   { anchorId: "tour-anchor-send", title: "Run the Analysis", description: "This kicks off the full analysis — typically 2-3 minutes for a complete run." },
   { anchorId: "tour-anchor-nav", title: "Explore Demo Mode", description: "Demo mode has pre-built sample deals if you want to explore the report layout before running your own." },
   { anchorId: "tour-anchor-tracker-link", title: "Revisit Past Runs", description: "Every completed run is saved here so you can revisit past reports." },
@@ -1439,21 +1587,133 @@ async function saveReportToFirestore(uid, dealId, data) {
 }
 
 function LiveView({ analystName, uid, onGoTracker, onStartTour, hasSeenTour }) {
-  const [jsonInput, setJsonInput] = useState("");
+  // `tiers` tracks which confidence tier last auto-filled each field (see extractDealFactHints)
+  // so a stronger hint can replace a weaker guess no matter which file's extraction finishes
+  // first — kept in the same state object as `values` (rather than a ref) so the setState
+  // updater below stays pure: React 18/19 StrictMode double-invokes updaters in dev to catch
+  // side effects, and an impure updater that mutated an external ref directly was silently
+  // corrupting this bookkeeping.
+  const [meta, setMeta] = useState({
+    values: { deal_id: "", target_company: "", industry: "", annual_sde: "", ev: "" },
+    tiers: {},
+  });
+  const [documents, setDocuments] = useState([]);
+  const [dragActive, setDragActive] = useState(false);
   const [status, setStatus] = useState("idle");
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [elapsed, setElapsed] = useState(0);
+  const fileInputRef = useRef(null);
+
+  const handleDocumentFiles = (fileList) => {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+    setErrorMsg("");
+    for (const file of files) {
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setDocuments(prev => [...prev, { id, source: "file", fileName: file.name, category: "site_visit_notes", text: "", status: "extracting" }]);
+      extractTextFromFile(file)
+        .then(text => {
+          const packet = parseWholeDealPacket(text);
+
+          if (packet) {
+            // Whole deal-packet JSON: replace the single placeholder with one document entry
+            // per populated category (exact key match, no guessing needed), and fill meta
+            // straight from its own fields.
+            const newDocs = DEAL_PACKET_DOC_KEYS
+              .filter(key => typeof packet[key] === "string" && packet[key].trim().length > 0)
+              .map(key => ({ id: `${id}-${key}`, source: "file", fileName: file.name, category: key, text: packet[key], status: "done" }));
+            setDocuments(prev => [...prev.filter(d => d.id !== id), ...newDocs]);
+            saveDealPacketToFirestore(uid, file.name, text);
+
+            setMeta(prev => {
+              const values = { ...prev.values };
+              const tiers = { ...prev.tiers };
+              for (const key of DEAL_PACKET_META_KEYS) {
+                if (packet[key] === undefined || packet[key] === null || packet[key] === "") continue;
+                const value = String(packet[key]);
+                const isBlank = !values[key] || !values[key].trim();
+                const currentTier = tiers[key];
+                const wasAutoFilled = currentTier !== undefined;
+                if (isBlank || (wasAutoFilled && 2 > currentTier)) {
+                  values[key] = value;
+                  tiers[key] = 2;
+                }
+              }
+              return { values, tiers };
+            });
+            return;
+          }
+
+          const category = classifyDocument(file.name, text);
+          setDocuments(prev => prev.map(d => d.id === id ? { ...d, text, category, status: "done" } : d));
+          saveDealPacketToFirestore(uid, file.name, text);
+
+          const hints = extractDealFactHints(text);
+          if (Object.keys(hints).length > 0) {
+            setMeta(prev => {
+              const values = { ...prev.values };
+              const tiers = { ...prev.tiers };
+              for (const [key, hint] of Object.entries(hints)) {
+                const isBlank = !values[key] || !values[key].trim();
+                const currentTier = tiers[key];
+                const wasAutoFilled = currentTier !== undefined;
+                if (isBlank || (wasAutoFilled && hint.tier > currentTier)) {
+                  values[key] = hint.value;
+                  tiers[key] = hint.tier;
+                }
+              }
+              return { values, tiers };
+            });
+          }
+        })
+        .catch(err => {
+          console.error(`DealGuard: failed to read ${file.name}.`, err);
+          setDocuments(prev => prev.map(d => d.id === id ? { ...d, status: "error" } : d));
+        });
+    }
+  };
+
+  const addManualNote = () => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setDocuments(prev => [...prev, { id, source: "manual", fileName: null, category: "site_visit_notes", text: "", status: "done" }]);
+  };
+
+  const updateDocument = (id, changes) => {
+    setDocuments(prev => prev.map(d => d.id === id ? { ...d, ...changes } : d));
+  };
+
+  const removeDocument = (id) => {
+    setDocuments(prev => prev.filter(d => d.id !== id));
+  };
+
+  const buildDocFields = () => {
+    const fields = { customer_revenue_csv: "", owner_interview_transcript: "", org_chart: "", sop_documents: "", employee_roster: "", site_visit_notes: "" };
+    for (const d of documents) {
+      if (d.status !== "done" || !d.text.trim()) continue;
+      fields[d.category] = fields[d.category] ? `${fields[d.category]}\n\n${d.text}` : d.text;
+    }
+    return fields;
+  };
 
   const handleSend = async () => {
-    let parsed;
-    try {
-      parsed = JSON.parse(jsonInput);
-    } catch (e) {
-      setErrorMsg("Invalid JSON — please check your input and try again.");
+    const values = meta.values;
+    if (!values.deal_id.trim() || !values.target_company.trim()) {
+      setErrorMsg("Deal ID and Target Company are required.");
       setStatus("error");
       return;
     }
+
+    const parsed = {
+      deal_id: values.deal_id,
+      target_company: values.target_company,
+      industry: values.industry,
+      annual_sde: values.annual_sde === "" ? null : Number(values.annual_sde),
+      ev: values.ev === "" ? null : Number(values.ev),
+      source_type: "seller_provided_files",
+      interview_input_type: "transcript",
+      ...buildDocFields(),
+    };
 
     setStatus("sending");
     setResult(null);
@@ -1474,57 +1734,83 @@ function LiveView({ analystName, uid, onGoTracker, onStartTour, hasSeenTour }) {
           selected_categories: ALL_DD_CATEGORIES,
         }),
       });
-      clearInterval(interval);
       if (!res.ok) throw new Error(`n8n returned ${res.status}`);
-      const text = await res.text();
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch (e) {
-        data = { raw_response: text, message: "Workflow completed but returned non-JSON response. Check Google Drive for the full report." };
-      }
-      setResult(data);
-      setStatus("success");
-      saveReportToFirestore(uid, parsed?.deal_id, data);
     } catch (e) {
       clearInterval(interval);
       setErrorMsg("Unable to reach the DealGuard analysis engine. Please try again in a moment or contact your administrator if the issue persists.");
       setStatus("error");
+      return;
     }
-  };
 
-  const handleFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      setJsonInput(ev.target.result);
-      saveDealPacketToFirestore(uid, file.name, ev.target.result);
+    // The intake webhook responds as soon as the run starts — it no longer waits for the
+    // analysis itself, since that regularly ran past the connection-length limit our
+    // infrastructure enforces. From here we poll a separate, fast status endpoint (just a Drive
+    // lookup, not the analysis) until the report shows up.
+    setStatus("polling");
+    const pollStart = Date.now();
+    const poll = async () => {
+      if (Date.now() - pollStart > REPORT_POLL_TIMEOUT_MS) {
+        clearInterval(interval);
+        setErrorMsg(`This analysis is taking longer than usual (over ${Math.round(REPORT_POLL_TIMEOUT_MS / 60000)} minutes). It may still complete — check the "DealGuard Reports" folder in Google Drive, or the run log spreadsheet, for deal ID "${parsed.deal_id}".`);
+        setStatus("error");
+        return;
+      }
+      let data = null;
+      try {
+        const res = await fetch(`${REPORT_STATUS_URL}?deal_id=${encodeURIComponent(parsed.deal_id)}`);
+        if (res.ok) {
+          const body = await res.json();
+          if (body.status === "completed") {
+            // Google Drive's "create file" step doesn't overwrite a same-named file from an
+            // earlier run with the same deal_id — it just adds another one — so a lookup by
+            // deal_id alone can find a stale leftover instead of this run's result. Reject
+            // anything generated before this submission (with a little slack for clock skew
+            // between this browser and n8n) rather than trusting it's fresh.
+            const generatedAtMs = body.report?.generated_at ? new Date(body.report.generated_at).getTime() : NaN;
+            if (Number.isFinite(generatedAtMs) && generatedAtMs < start - 15000) {
+              // Stale match — keep polling for the real one.
+            } else {
+              data = body;
+            }
+          }
+        }
+      } catch (e) {
+        // A single missed poll isn't fatal — the run keeps going regardless; just try again.
+      }
+      if (data) {
+        clearInterval(interval);
+        setResult(data);
+        setStatus("success");
+        saveReportToFirestore(uid, parsed?.deal_id, data);
+        return;
+      }
+      setTimeout(poll, REPORT_POLL_INTERVAL_MS);
     };
-    reader.readAsText(file);
+    poll();
   };
 
   const loadExample = () => {
-    const example = {
-      deal_id: "test_001",
-      target_company: "Pinnacle Plumbing Services LLC",
-      industry: "Plumbing Services",
-      annual_sde: 420000,
-      ev: 2100000,
-      interview_input_type: "transcript",
-      source_type: "seller_provided_files",
-      input_type: "customer_revenue_csv",
-      customer_revenue_csv: "customer,revenue\nMetro Housing Authority,378000\nSunridge Apartments,189000\nClearview Commercial,126000\nParkside Developers,84000\nWestfield Schools,63000\nOther,118000",
-      owner_interview_transcript: "Owner handles all customer relationships personally. Has not taken a vacation in 3 years. No second in command. Replacement cost estimated at $14,500/month.",
-      org_chart: "Owner/CEO: handles all customer relationships, pricing, vendor management. Foreman: field operations only. Office Manager: part time, data entry.",
-      sop_documents: "Job scheduling: whiteboard and spreadsheet system. Customer onboarding: no formal process. Emergency response: owner contacted directly.",
-      employee_roster: "name,role,department,tenure_years,salary_annual,has_noncompete\nRick Torrence,Foreman,Operations,12,72000,yes\nLinda Marsh,Office Manager,Admin,4,28000,no\nJose Martinez,Lead Plumber,Field,7,68000,no",
-      site_visit_notes: "Office is a converted garage. Whiteboard is the primary job tracking system. Employees deferred all business questions to the owner."
-    };
-    setJsonInput(JSON.stringify(example, null, 2));
+    setMeta({
+      values: {
+        deal_id: "test_001",
+        target_company: "Pinnacle Plumbing Services LLC",
+        industry: "Plumbing Services",
+        annual_sde: "420000",
+        ev: "2100000",
+      },
+      tiers: {},
+    });
+    setDocuments([
+      { id: "example-customer_revenue_csv", source: "manual", fileName: null, category: "customer_revenue_csv", status: "done", text: "customer,revenue\nMetro Housing Authority,378000\nSunridge Apartments,189000\nClearview Commercial,126000\nParkside Developers,84000\nWestfield Schools,63000\nOther,118000" },
+      { id: "example-owner_interview_transcript", source: "manual", fileName: null, category: "owner_interview_transcript", status: "done", text: "Owner handles all customer relationships personally. Has not taken a vacation in 3 years. No second in command. Replacement cost estimated at $14,500/month." },
+      { id: "example-org_chart", source: "manual", fileName: null, category: "org_chart", status: "done", text: "Owner/CEO: handles all customer relationships, pricing, vendor management. Foreman: field operations only. Office Manager: part time, data entry." },
+      { id: "example-sop_documents", source: "manual", fileName: null, category: "sop_documents", status: "done", text: "Job scheduling: whiteboard and spreadsheet system. Customer onboarding: no formal process. Emergency response: owner contacted directly." },
+      { id: "example-employee_roster", source: "manual", fileName: null, category: "employee_roster", status: "done", text: "name,role,department,tenure_years,salary_annual,has_noncompete\nRick Torrence,Foreman,Operations,12,72000,yes\nLinda Marsh,Office Manager,Admin,4,28000,no\nJose Martinez,Lead Plumber,Field,7,68000,no" },
+      { id: "example-site_visit_notes", source: "manual", fileName: null, category: "site_visit_notes", status: "done", text: "Office is a converted garage. Whiteboard is the primary job tracking system. Employees deferred all business questions to the owner." },
+    ]);
   };
 
-  const hasInput = jsonInput.trim().length > 0;
+  const hasInput = meta.values.deal_id.trim().length > 0 && meta.values.target_company.trim().length > 0;
 
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: 28, display: "flex", flexDirection: "column", gap: 20 }}>
@@ -1558,79 +1844,138 @@ function LiveView({ analystName, uid, onGoTracker, onStartTour, hasSeenTour }) {
         ))}
       </div>
 
-      {/* WHAT WE ANALYZE — read-only, all 5 categories always run */}
-      <div id="tour-anchor-chips" style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 20 }}>
-        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: COLORS.muted, marginBottom: 14 }}>What We Analyze</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
-          {LIVE_CATEGORY_CHIPS.map(cat => (
-            <div key={cat.key} style={{ display: "flex", flexDirection: "column", gap: 4, padding: "12px 14px", borderRadius: 8, background: COLORS.card2, border: `1px solid ${COLORS.border}` }}>
-              <div style={{ fontSize: 16 }}>{cat.icon}</div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: COLORS.text }}>{cat.label}</div>
-              <div style={{ fontSize: 10, color: COLORS.muted, lineHeight: 1.4 }}>{cat.description}</div>
-            </div>
-          ))}
-        </div>
-      </div>
 
-      {/* JSON INPUT */}
+      {/* DEAL PACKET FORM */}
       <div id="tour-anchor-jsoncard" style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 24 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 15 }}>📄</span>
-            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.text }}>Deal Packet JSON</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.text }}>Deal Packet</div>
           </div>
-          <div style={{ display: "flex", border: `1px solid ${COLORS.border}`, borderRadius: 6, overflow: "hidden", flexShrink: 0 }}>
-            <button onClick={loadExample} style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, cursor: "pointer", background: COLORS.card2, color: COLORS.sub, border: "none", borderRight: `1px solid ${COLORS.border}` }}>Load Example</button>
-            <label style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, cursor: "pointer", background: COLORS.card2, color: COLORS.sub, border: "none" }}>
-              Upload JSON <input type="file" accept=".json" onChange={handleFileUpload} style={{ display: "none" }} />
-            </label>
-          </div>
+          <button onClick={loadExample} style={{ padding: "6px 14px", fontSize: 11, fontWeight: 600, cursor: "pointer", background: COLORS.card2, color: COLORS.sub, border: `1px solid ${COLORS.border}`, borderRadius: 6, flexShrink: 0 }}>Load Example</button>
         </div>
-        <div style={{ fontSize: 11, color: COLORS.muted, marginBottom: 16 }}>Paste your deal packet JSON, or upload a file — see field reference in Load Example.</div>
-        <div style={{ position: "relative" }}>
-          <textarea
-            value={jsonInput}
-            onChange={e => setJsonInput(e.target.value)}
-            style={{ width: "100%", height: 240, background: hasInput ? COLORS.card2 : "rgba(248,250,252,0.6)", border: `1.5px dashed ${hasInput ? COLORS.border : "#CBD5E1"}`, borderRadius: 8, padding: 14, color: COLORS.text, fontSize: 11, fontFamily: "monospace", outline: "none", resize: "vertical", lineHeight: 1.6, transition: "border-color 0.15s, background 0.15s" }}
-          />
-          {!hasInput && (
-            <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, pointerEvents: "none" }}>
-              <div style={{ fontSize: 26, opacity: 0.6 }}>📄</div>
-              <div style={{ fontSize: 12, color: COLORS.muted, fontWeight: 600 }}>Paste deal packet JSON here</div>
-              <div style={{ fontSize: 11, color: COLORS.muted }}>or click "Load Example" above to use a test deal</div>
+        <div style={{ fontSize: 11, color: COLORS.muted, marginBottom: 16 }}>Fill in the deal facts, then drop in your deal documents — each one is automatically sorted into the right category.</div>
+
+        {/* DEAL FACTS */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 20 }}>
+          {[
+            { key: "deal_id", label: "Deal ID", type: "text" },
+            { key: "target_company", label: "Target Company", type: "text" },
+            { key: "industry", label: "Industry", type: "text" },
+            { key: "annual_sde", label: "Annual SDE ($)", type: "number" },
+            { key: "ev", label: "Enterprise Value ($)", type: "number" },
+          ].map(f => (
+            <div key={f.key}>
+              <div style={{ fontSize: 10, color: COLORS.muted, fontWeight: 600, marginBottom: 5 }}>{f.label}</div>
+              <input
+                type={f.type}
+                value={meta.values[f.key]}
+                onChange={e => {
+                  const value = e.target.value;
+                  setMeta(prev => {
+                    const tiers = { ...prev.tiers };
+                    delete tiers[f.key];
+                    return { values: { ...prev.values, [f.key]: value }, tiers };
+                  });
+                }}
+                style={{ width: "100%", background: COLORS.card2, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: "7px 10px", color: COLORS.text, fontSize: 12, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
+              />
             </div>
-          )}
+          ))}
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12 }}>
+
+        {/* DOCUMENT DROPZONE */}
+        <div
+          onClick={() => fileInputRef.current?.click()}
+          onDragOver={e => { e.preventDefault(); setDragActive(true); }}
+          onDragLeave={() => setDragActive(false)}
+          onDrop={e => { e.preventDefault(); setDragActive(false); handleDocumentFiles(e.dataTransfer.files); }}
+          style={{ border: `1.5px dashed ${dragActive ? COLORS.blue : "#CBD5E1"}`, borderRadius: 10, padding: 24, textAlign: "center", background: dragActive ? "rgba(79,70,229,0.05)" : "rgba(248,250,252,0.6)", cursor: "pointer", transition: "border-color 0.15s, background 0.15s" }}
+        >
+          <div style={{ fontSize: 24, opacity: 0.7 }}>📎</div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.text, marginTop: 6 }}>Drop deal documents here, or click to browse</div>
+          <div style={{ fontSize: 10, color: COLORS.muted, marginTop: 4 }}>PDF, CSV, TXT, or JSON — sorted automatically into revenue, interview, org chart, SOPs, roster & site notes</div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept=".pdf,.csv,.txt,.json,application/pdf,text/csv,text/plain,application/json"
+            onChange={e => { handleDocumentFiles(e.target.files); e.target.value = ""; }}
+            onClick={e => e.stopPropagation()}
+            style={{ display: "none" }}
+          />
+        </div>
+
+        {/* DOCUMENT LIST */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 14 }}>
+          {documents.map(docItem => (
+            <div key={docItem.id} style={{ background: COLORS.card2, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                  <span style={{ fontSize: 13, flexShrink: 0 }}>{docItem.source === "file" ? "📎" : "✏️"}</span>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {docItem.fileName || "Pasted note"}
+                  </div>
+                  {docItem.status === "extracting" && <span style={{ fontSize: 10, color: COLORS.muted, flexShrink: 0 }}>Reading…</span>}
+                  {docItem.status === "error" && <span style={{ fontSize: 10, color: COLORS.red, flexShrink: 0 }}>Couldn't read file</span>}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                  <select
+                    value={docItem.category}
+                    onChange={e => updateDocument(docItem.id, { category: e.target.value })}
+                    style={{ fontSize: 10, fontWeight: 600, padding: "5px 6px", borderRadius: 6, border: `1px solid ${COLORS.border}`, background: COLORS.card, color: COLORS.blue, outline: "none" }}
+                  >
+                    {DEAL_DOCUMENT_FIELDS.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+                  </select>
+                  <button onClick={() => removeDocument(docItem.id)} style={{ padding: "4px 8px", fontSize: 12, fontWeight: 700, cursor: "pointer", background: "none", border: "none", color: COLORS.muted }}>✕</button>
+                </div>
+              </div>
+              <textarea
+                value={docItem.text}
+                onChange={e => updateDocument(docItem.id, { text: e.target.value })}
+                placeholder="Paste text here…"
+                style={{ width: "100%", height: 70, background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: 10, color: COLORS.text, fontSize: 11, fontFamily: "monospace", outline: "none", resize: "vertical", lineHeight: 1.5, boxSizing: "border-box" }}
+              />
+            </div>
+          ))}
+        </div>
+
+        <button onClick={addManualNote} style={{ marginTop: 10, padding: 0, background: "none", border: "none", cursor: "pointer", fontSize: 11, fontWeight: 600, color: COLORS.blue }}>+ Add a pasted note</button>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 20 }}>
           <div>
             <div style={{ fontSize: 11, color: COLORS.muted }}>
               Analyst: <span style={{ color: COLORS.blue, fontWeight: 600 }}>{analystName}</span>
             </div>
             <div style={{ fontSize: 10, color: COLORS.muted, marginTop: 2 }}>Running all 5 risk categories</div>
           </div>
-          <button id="tour-anchor-send" onClick={handleSend} disabled={status === "sending" || !hasInput}
-            style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: status === "sending" || !hasInput ? "not-allowed" : "pointer", background: status === "sending" || !hasInput ? COLORS.card2 : COLORS.blue, color: status === "sending" || !hasInput ? COLORS.muted : "white", border: "none", transition: "all 0.2s" }}>
-            {status === "sending" ? `⟳ Running — ${elapsed}s` : `Send to DealGuard →`}
+          <button id="tour-anchor-send" onClick={handleSend} disabled={status === "sending" || status === "polling" || !hasInput}
+            style={{ padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: status === "sending" || status === "polling" || !hasInput ? "not-allowed" : "pointer", background: status === "sending" || status === "polling" || !hasInput ? COLORS.card2 : COLORS.blue, color: status === "sending" || status === "polling" || !hasInput ? COLORS.muted : "white", border: "none", transition: "all 0.2s" }}>
+            {status === "sending" ? "⟳ Submitting…" : status === "polling" ? `⟳ Running — ${elapsed}s` : `Send to DealGuard →`}
           </button>
         </div>
       </div>
 
       {/* STATUS */}
       {status === "sending" && (
+        <div style={{ background: "rgba(79,70,229,0.06)", border: "1px solid rgba(79,70,229,0.2)", borderRadius: 10, padding: 20, display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ width: 22, height: 22, borderRadius: "50%", border: `2px solid ${COLORS.blue}`, borderTopColor: "transparent", animation: "spin 1s linear infinite" }} />
+          <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.blue }}>Submitting deal packet…</div>
+        </div>
+      )}
+
+      {status === "polling" && (
         <div style={{ background: "rgba(79,70,229,0.06)", border: "1px solid rgba(79,70,229,0.2)", borderRadius: 10, padding: 20 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
             <div style={{ width: 22, height: 22, borderRadius: "50%", border: `2px solid ${COLORS.blue}`, borderTopColor: "transparent", animation: "spin 1s linear infinite" }} />
-            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.blue }}>Workflow running — {elapsed}s elapsed</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.blue }}>Analysis running — {elapsed}s elapsed</div>
           </div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {["Intake", "Normalize", "Route", "Parse", "Classify", "Audit", "Merge", "Validate", "Generate", "Deliver"].map((step, i) => (
-              <div key={step} style={{ fontSize: 10, padding: "3px 10px", borderRadius: 20, background: elapsed > i * 4 ? "rgba(16,185,129,0.15)" : "rgba(100,116,139,0.12)", color: elapsed > i * 4 ? COLORS.green : COLORS.muted, border: `1px solid ${elapsed > i * 4 ? "rgba(16,185,129,0.3)" : COLORS.border}`, fontWeight: 600, transition: "all 0.5s" }}>
-                {elapsed > i * 4 ? "✓ " : ""}{step}
-              </div>
-            ))}
+          <div style={{ fontSize: 11, color: COLORS.muted, marginLeft: 34 }}>
+            This typically takes 2-5 minutes. You can leave this tab open — we're checking for the finished report automatically every few seconds, no need to refresh.
           </div>
         </div>
       )}
+
 
       {status === "error" && (
         <div style={{ background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 10, padding: 20 }}>
@@ -2254,6 +2599,19 @@ function GuideView({ onStartTour }) {
       <div>
         <div style={{ fontSize: 22, fontWeight: 700, color: COLORS.text, marginBottom: 4 }}>Guide</div>
         <div style={{ fontSize: 12, color: COLORS.muted }}>Answers to common questions about how DealGuard works.</div>
+      </div>
+
+      <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 20 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: COLORS.muted, marginBottom: 14 }}>What We Analyze</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10 }}>
+          {LIVE_CATEGORY_CHIPS.map(cat => (
+            <div key={cat.key} style={{ display: "flex", flexDirection: "column", gap: 4, padding: "12px 14px", borderRadius: 8, background: COLORS.card2, border: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontSize: 16 }}>{cat.icon}</div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: COLORS.text }}>{cat.label}</div>
+              <div style={{ fontSize: 10, color: COLORS.muted, lineHeight: 1.4 }}>{cat.description}</div>
+            </div>
+          ))}
+        </div>
       </div>
 
       {onStartTour && (
