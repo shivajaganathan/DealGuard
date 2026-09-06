@@ -339,7 +339,7 @@ function DealReport({ deal, analystName }) {
     setExpandedCats({ customer_concentration: true, owner_dependency: true, operational_sop: false, employee_culture: false });
     setReportGenerated(false);
     setInputs({ company: deal.company, industry: deal.industry, annualSde: deal.annualSde, ev: deal.ev });
-  }, [deal.id]);
+  }, [deal.id, deal.company, deal.industry, deal.annualSde, deal.ev, deal.escalations]);
 
   const pc = postureConfig[deal.posture];
   const categories = ["customer_concentration", "owner_dependency", "operational_sop", "employee_culture"];
@@ -1413,13 +1413,13 @@ function classifyDocument(fileName, text) {
 // rules out the mid-sentence case almost entirely; matching anywhere in the text (the earlier
 // version) was matching prose incidentally and producing convincing-looking wrong values.
 const DEAL_FACT_STRING_PATTERNS = {
-  target_company: /^[ \t]*(?:target\s+company|company\s+name|business\s+name|client\s+name|prepared\s+for)[ \t]*[:\-][ \t]*(.{2,80})$/im,
-  deal_id: /^[ \t]*deal\s*(?:id|#|number)[ \t]*[:\-][ \t]*([A-Za-z0-9_-]{2,40})/im,
-  industry: /^[ \t]*industry[ \t]*[:\-][ \t]*(.{2,60})$/im,
+  target_company: /^[ \t]*(?:target\s+company|company\s+name|business\s+name|client\s+name|prepared\s+for)[ \t]*[:-][ \t]*(.{2,80})$/im,
+  deal_id: /^[ \t]*deal\s*(?:id|#|number)[ \t]*[:-][ \t]*([A-Za-z0-9_-]{2,40})/im,
+  industry: /^[ \t]*industry[ \t]*[:-][ \t]*(.{2,60})$/im,
 };
 const DEAL_FACT_NUMBER_PATTERNS = {
-  annual_sde: /^[ \t]*(?:annual\s+)?sde\s*(?:\(\$\))?[ \t]*[:\-][ \t]*\$?[ \t]*([\d,]{3,})/im,
-  ev: /^[ \t]*(?:enterprise\s+value|purchase\s+price|deal\s+value|ev)[ \t]*(?:\(\$\))?[ \t]*[:\-][ \t]*\$?[ \t]*([\d,]{3,})/im,
+  annual_sde: /^[ \t]*(?:annual\s+)?sde\s*(?:\(\$\))?[ \t]*[:-][ \t]*\$?[ \t]*([\d,]{3,})/im,
+  ev: /^[ \t]*(?:enterprise\s+value|purchase\s+price|deal\s+value|ev)[ \t]*(?:\(\$\))?[ \t]*[:-][ \t]*\$?[ \t]*([\d,]{3,})/im,
 };
 
 // A single tier here (unlike the earlier filename-guess design): every hint below comes from an
