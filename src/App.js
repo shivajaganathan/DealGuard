@@ -7,7 +7,7 @@ import {
   updateProfile,
   signOut,
 } from "firebase/auth";
-import { doc, setDoc, serverTimestamp, collection, query, orderBy, onSnapshot } from "firebase/firestore";
+import { doc, setDoc, getDoc, serverTimestamp, collection, query, orderBy, onSnapshot } from "firebase/firestore";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 
 GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
@@ -168,8 +168,8 @@ const postureConfig = {
   proceed_with_clauses: { label: "Proceed with Clauses", color: COLORS.green, bg: "rgba(16,185,129,0.07)", border: "rgba(16,185,129,0.25)" },
   escalate_to_analyst: { label: "Escalate to Analyst", color: COLORS.amber, bg: "rgba(245,158,11,0.07)", border: "rgba(245,158,11,0.25)" },
 };
-const catLabel = { customer_concentration: "Customer Concentration", owner_dependency: "Owner Dependency", operational_sop: "SOP / Process Risk", employee_culture: "Employee & Culture" };
-const catIcon = { customer_concentration: "👥", owner_dependency: "🔑", operational_sop: "📋", employee_culture: "🏢" };
+const catLabel = { customer_concentration: "Customer Concentration", owner_dependency: "Owner Dependency", operational_sop: "SOP / Process Risk", employee_culture: "Employee & Culture", web_research: "Web Research" };
+const catIcon = { customer_concentration: "👥", owner_dependency: "🔑", operational_sop: "📋", employee_culture: "🏢", web_research: "🌐" };
 
 function ConcentrationChart({ data }) {
   const maxVal = Math.max(...data.map(d => d.pct), 30);
@@ -629,13 +629,15 @@ function FindingCard({ finding }) {
     customer_concentration: "👥",
     owner_dependency: "🔑",
     operational_sop: "📋",
-    employee_culture: "🏢"
+    employee_culture: "🏢",
+    web_research: "🌐"
   };
   const catLabels = {
     customer_concentration: "Customer Concentration",
     owner_dependency: "Owner Dependency",
     operational_sop: "SOP / Process Risk",
-    employee_culture: "Employee & Culture"
+    employee_culture: "Employee & Culture",
+    web_research: "Web Research"
   };
 
   const sevColor = {
@@ -702,8 +704,10 @@ function FindingCard({ finding }) {
             </div>
           )}
 
-          {/* LOI Clause */}
-          {(finding.loi_clause?.recommended || finding.loi_clause?.clause_type) && (
+          {/* LOI Clause — never shown for web_research: those findings are explicitly labeled
+              "context only, not a verified diligence fact" in the Public & Web Intelligence
+              section, so unverified web signal must not drive a real negotiation lever here. */}
+          {finding.category !== "web_research" && (finding.loi_clause?.recommended || finding.loi_clause?.clause_type) && (
             <div style={{ background: "rgba(139,92,246,0.06)", borderRadius: 8, padding: 14, border: "1px solid rgba(139,92,246,0.2)" }}>
               <div style={{ fontSize: 10, fontWeight: 700, color: "#7C3AED", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
                 LOI Clause → {(finding.loi_clause.clause_type || '').replace(/_/g, ' ').toUpperCase()}
@@ -991,8 +995,10 @@ function ReportRenderer({ report }) {
     navigator.clipboard.writeText(text);
   };
 
-  const knownCats = Object.keys(catLabel);
-  const extraCats = Array.from(new Set(findings.map(f => f.category).filter(c => c && !knownCats.includes(c))));
+  // web_research is deliberately excluded from this list — it gets its own Public & Web
+  // Intelligence section below (with its "context only" caveat) instead of a duplicate card here.
+  const knownCats = Object.keys(catLabel).filter(c => c !== "web_research");
+  const extraCats = Array.from(new Set(findings.map(f => f.category).filter(c => c && c !== "web_research" && !knownCats.includes(c))));
   const allCats = [...knownCats, ...extraCats];
   const toggleCat = (cat, defaultExpanded) => {
     setExpandedCats(prev => ({ ...prev, [cat]: !(cat in prev ? prev[cat] : defaultExpanded) }));
@@ -1218,7 +1224,10 @@ function ReportRenderer({ report }) {
           data, and loi_clause has no dollar field at all. Do not add totals/percentages/savings
           math here; only ever surface clause_notes verbatim. */}
       {(() => {
-        const leveredFindings = findings.filter(f => f.loi_clause?.recommended === true && f.loi_clause?.clause_type);
+        // web_research is excluded here for the same reason as the LOI Clause block in
+        // FindingCard: it's presented as context-only, unverified signal, so it can't be the
+        // basis for an actual negotiation lever.
+        const leveredFindings = findings.filter(f => f.category !== "web_research" && f.loi_clause?.recommended === true && f.loi_clause?.clause_type);
         const clauseGroups = {};
         leveredFindings.forEach(f => {
           const type = f.loi_clause.clause_type;
@@ -1374,9 +1383,15 @@ async function extractTextFromFile(file) {
 const DOCUMENT_CATEGORY_SIGNALS = {
   customer_revenue_csv: { filename: /revenue|customer.*(sales|rev)/i, content: ["revenue", "customer,revenue", "annual revenue", "sales by customer"] },
   employee_roster: { filename: /roster|headcount|employee.?list|staff.?list/i, content: ["tenure_years", "has_noncompete", "role,department", "employee roster"] },
-  owner_interview_transcript: { filename: /interview|transcript/i, content: ["interview", "asked the owner", "owner said", "replacement cost"] },
+  // "follow.?up" / "correspondence" catch seller Q&A sent as an email or letter rather than a
+  // live-recorded interview — same subject matter, different packaging.
+  owner_interview_transcript: { filename: /interview|transcript|follow.?up|correspondence/i, content: ["interview", "asked the owner", "owner said", "replacement cost"] },
   org_chart: { filename: /org.?chart|organi[sz]ational.?chart|reporting.?structure/i, content: ["org chart", "reports to", "reporting line", "org structure"] },
-  sop_documents: { filename: /\bsops?\b|procedure|process.?manual|standard.?operating/i, content: ["standard operating procedure", "sop", "checklist", "documented process"] },
+  // (?<![a-z])...(?![a-z]) instead of \b: \b doesn't count "_" as a boundary, so it silently
+  // failed to match real filenames like "Operations_SOP_Summary.pdf" where SOP sits between
+  // underscores. The lookaround treats any non-letter (including "_") as a valid edge while
+  // still refusing to match "sop" inside an unrelated word like "sophisticated".
+  sop_documents: { filename: /(?<![a-z])sops?(?![a-z])|procedure|process.?manual|standard.?operating/i, content: ["standard operating procedure", "sop", "checklist", "documented process"] },
   site_visit_notes: { filename: /site.?visit|walkthrough|facility.?notes/i, content: ["site visit", "on-site", "walkthrough", "observed"] },
 };
 
@@ -1392,10 +1407,17 @@ function classifyDocument(fileName, text) {
     if (signals.filename.test(lowerName)) return category;
   }
 
+  // A Q&A document reads as a run of questions each followed by an answer paragraph, whether
+  // it's a live-recorded interview or a written seller follow-up — bump owner_interview_transcript
+  // for that shape so a differently-worded Q&A doc still lands in the right bucket even when
+  // neither its filename nor its content keywords say "interview".
+  const questionLines = (text.match(/\?[ \t]*$/gm) || []).length;
+
   let bestCategory = null;
   let bestScore = 0;
   for (const [category, signals] of Object.entries(DOCUMENT_CATEGORY_SIGNALS)) {
-    const score = signals.content.reduce((acc, kw) => acc + (lowerText.includes(kw) ? 1 : 0), 0);
+    let score = signals.content.reduce((acc, kw) => acc + (lowerText.includes(kw) ? 1 : 0), 0);
+    if (category === "owner_interview_transcript" && questionLines >= 2) score += 2;
     if (score > bestScore) { bestScore = score; bestCategory = category; }
   }
   return bestCategory || "site_visit_notes";
@@ -1422,11 +1444,19 @@ const DEAL_FACT_NUMBER_PATTERNS = {
   ev: /^[ \t]*(?:enterprise\s+value|purchase\s+price|deal\s+value|ev)[ \t]*(?:\(\$\))?[ \t]*[:-][ \t]*\$?[ \t]*([\d,]{3,})/im,
 };
 
-// A single tier here (unlike the earlier filename-guess design): every hint below comes from an
-// explicit, line-anchored label, so there's no weaker signal to arbitrate against. If a document
-// doesn't label these facts — the common case — the fields are simply left for the analyst to
-// type; a guess from the filename alone turned out to produce convincing-looking wrong company
-// names often enough that leaving the field blank is the safer default.
+// Real DD documents (site visit notes, SOPs, rosters) almost never label their own company name
+// with "Company Name: X" — but they very often open with a title line like "Harborview Home
+// Services LLC - Employee Roster". A legal-entity suffix (LLC, Inc, Corp, ...) right there in the
+// title is as strong an anchor as an explicit label — it's not the kind of phrase that shows up by
+// accident mid-sentence — so it's safe to treat as a (weaker, tier-1) hint for target_company,
+// restricted to the document's title line only, never scanned across the whole body.
+const DEAL_FACT_TITLE_COMPANY_PATTERN = /^[ \t]*([A-Z][A-Za-z0-9&.,'()\s]{1,78}?\s(?:LLC|L\.L\.C\.|Inc\.?|Incorporated|Corp\.?|Corporation|Co\.|Company|Ltd\.?|LLP|LP|PLLC|PC))\b/;
+
+// Tier 2 (explicit "Label: value" line) always wins over tier 1 (title-line company guess) — see
+// the isBlank / tier-comparison logic in handleDocumentFiles. If a document doesn't label these
+// facts at all and isn't a titled entity, the fields are simply left for the analyst to type; a
+// guess from the filename alone turned out to produce convincing-looking wrong company names
+// often enough that leaving the field blank is the safer default.
 function extractDealFactHints(text) {
   const hints = {};
   for (const [key, regex] of Object.entries(DEAL_FACT_STRING_PATTERNS)) {
@@ -1437,6 +1467,13 @@ function extractDealFactHints(text) {
     const match = text.match(regex);
     if (match) hints[key] = { value: match[1].replace(/,/g, ""), tier: 2 };
   }
+
+  if (!hints.target_company) {
+    const titleLine = (text.split("\n").find(l => l.trim().length > 0) || "").trim();
+    const titleMatch = titleLine.match(DEAL_FACT_TITLE_COMPANY_PATTERN);
+    if (titleMatch) hints.target_company = { value: titleMatch[1].trim().replace(/\s+/g, " "), tier: 1 };
+  }
+
   return hints;
 }
 
@@ -1586,6 +1623,99 @@ async function saveReportToFirestore(uid, dealId, data) {
   }
 }
 
+// Per-analyst preferences (results email + optional custom API key), stored one doc per user
+// under the same users/{uid} tree everything else lives in — already locked to that user alone
+// by firestore.rules. An absent or blank apiKey is intentionally never written as a real value
+// here; handleSend below omits the field entirely from the n8n payload in that case so the
+// workflow falls back to its own default (MergeWorks-managed) credential instead of receiving an
+// empty string it would have to special-case.
+async function loadAnalystSettings(uid) {
+  if (!uid) return { resultsEmail: "", apiKey: "" };
+  try {
+    const snap = await getDoc(doc(db, "users", uid, "settings", "preferences"));
+    const data = snap.exists() ? snap.data() : {};
+    return { resultsEmail: data.resultsEmail || "", apiKey: data.apiKey || "" };
+  } catch (err) {
+    console.error("DealGuard: failed to load analyst settings from Firestore.", err);
+    return { resultsEmail: "", apiKey: "" };
+  }
+}
+
+async function saveAnalystSettings(uid, { resultsEmail, apiKey }) {
+  if (!uid) throw new Error("No signed-in user; cannot save settings.");
+  await setDoc(doc(db, "users", uid, "settings", "preferences"), {
+    resultsEmail,
+    apiKey,
+    updatedAt: serverTimestamp(),
+  }, { merge: true });
+}
+
+function SettingsView({ uid }) {
+  const [resultsEmail, setResultsEmail] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    loadAnalystSettings(uid).then(s => {
+      if (cancelled) return;
+      setResultsEmail(s.resultsEmail);
+      setApiKey(s.apiKey);
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [uid]);
+
+  const handleSave = async () => {
+    setSaveState("saving");
+    try {
+      await saveAnalystSettings(uid, { resultsEmail: resultsEmail.trim(), apiKey: apiKey.trim() });
+      setSaveState("saved");
+      setTimeout(() => setSaveState(s => (s === "saved" ? "idle" : s)), 2000);
+    } catch (err) {
+      console.error("DealGuard: failed to save analyst settings.", err);
+      setSaveState("error");
+    }
+  };
+
+  const inputStyle = { width: "100%", background: COLORS.card2, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: "9px 12px", color: COLORS.text, fontSize: 13, outline: "none", fontFamily: "inherit" };
+
+  if (loading) {
+    return <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, color: COLORS.muted }}>Loading settings…</div>;
+  }
+
+  return (
+    <div style={{ flex: 1, overflowY: "auto", padding: 28, display: "flex", justifyContent: "center" }}>
+      <div style={{ width: "100%", maxWidth: 520, display: "flex", flexDirection: "column", gap: 24 }}>
+        <div style={{ fontSize: 18, fontWeight: 700, color: COLORS.text }}>Settings</div>
+
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.text, marginBottom: 4 }}>Results Email</div>
+          <div style={{ fontSize: 11, color: COLORS.muted, marginBottom: 8, lineHeight: 1.5 }}>Completed analysis reports are sent to this address. Leave blank to use your account email.</div>
+          <input type="email" value={resultsEmail} onChange={e => setResultsEmail(e.target.value)} placeholder="you@company.com" style={inputStyle} />
+        </div>
+
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.text, marginBottom: 4 }}>API Key</div>
+          <div style={{ fontSize: 11, color: COLORS.muted, marginBottom: 8, lineHeight: 1.5 }}>Optional — use your own API key for analysis runs instead of the shared MergeWorks key. Leave blank to keep using the default.</div>
+          <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="Default MergeWorks key" autoComplete="off" style={inputStyle} />
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <button onClick={handleSave} disabled={saveState === "saving"}
+            style={{ padding: "8px 18px", borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: saveState === "saving" ? "not-allowed" : "pointer", background: COLORS.blue, color: "white", border: "none" }}>
+            {saveState === "saving" ? "Saving…" : "Save Settings"}
+          </button>
+          {saveState === "saved" && <div style={{ fontSize: 12, color: COLORS.green, fontWeight: 600 }}>✓ Saved</div>}
+          {saveState === "error" && <div style={{ fontSize: 12, color: "#DC2626", fontWeight: 600 }}>Failed to save — try again.</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LiveView({ analystName, uid, onGoTracker, onStartTour, hasSeenTour }) {
   // `tiers` tracks which confidence tier last auto-filled each field (see extractDealFactHints)
   // so a stronger hint can replace a weaker guess no matter which file's extraction finishes
@@ -1723,6 +1853,12 @@ function LiveView({ analystName, uid, onGoTracker, onStartTour, hasSeenTour }) {
     const start = Date.now();
     const interval = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
 
+    // Settings tab lets the analyst override the results-delivery address and swap in their own
+    // API key; a blank apiKey here means "api_key" is left off the payload below entirely (rather
+    // than sent as ""), so the n8n workflow's own fallback to the default MergeWorks credential
+    // stays in charge instead of having to special-case an empty string.
+    const { resultsEmail, apiKey } = await loadAnalystSettings(uid);
+
     try {
       const res = await fetch(WEBHOOK_URL, {
         method: "POST",
@@ -1730,7 +1866,8 @@ function LiveView({ analystName, uid, onGoTracker, onStartTour, hasSeenTour }) {
         body: JSON.stringify({
           ...parsed,
           analyst_name: analystName,
-          analyst_email: `${analystName.toLowerCase().replace(/\s/g, ".")}@dealguard.com`,
+          analyst_email: resultsEmail || `${analystName.toLowerCase().replace(/\s/g, ".")}@dealguard.com`,
+          api_key: apiKey || undefined,
           selected_categories: ALL_DD_CATEGORIES,
         }),
       });
@@ -2649,7 +2786,7 @@ function GuideView({ onStartTour }) {
 
 // ── APP ───────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [mode, setMode] = useState("live"); // demo | live | tracker | compare | guide
+  const [mode, setMode] = useState("live"); // demo | live | tracker | compare | guide | settings
   const [view, setView] = useState("deals"); // deals | monitor
   const [selectedDeal, setSelectedDeal] = useState(mockDeals[0]);
   const [firebaseUser, setFirebaseUser] = useState(null);
@@ -2735,6 +2872,7 @@ export default function App() {
             <button onClick={() => setMode("tracker")} style={{ padding: "5px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", border: "none", background: mode === "tracker" ? "rgba(79,70,229,0.15)" : "transparent", color: mode === "tracker" ? COLORS.blue : COLORS.muted, transition: "all 0.15s", letterSpacing: "0.05em" }}>TRACKER</button>
             <button onClick={() => setMode("compare")} style={{ padding: "5px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", border: "none", background: mode === "compare" ? "rgba(79,70,229,0.15)" : "transparent", color: mode === "compare" ? COLORS.blue : COLORS.muted, transition: "all 0.15s", letterSpacing: "0.05em" }}>COMPARE</button>
             <button onClick={() => setMode("guide")} style={{ padding: "5px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", border: "none", background: mode === "guide" ? "rgba(79,70,229,0.15)" : "transparent", color: mode === "guide" ? COLORS.blue : COLORS.muted, transition: "all 0.15s", letterSpacing: "0.05em" }}>GUIDE</button>
+            <button onClick={() => setMode("settings")} style={{ padding: "5px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", border: "none", background: mode === "settings" ? "rgba(79,70,229,0.15)" : "transparent", color: mode === "settings" ? COLORS.blue : COLORS.muted, transition: "all 0.15s", letterSpacing: "0.05em" }}>SETTINGS</button>
           </div>
         </div>
 
@@ -2778,6 +2916,7 @@ export default function App() {
         {mode === "tracker" && <LiveTrackerView uid={firebaseUser?.uid} onGoLive={() => setMode("live")} />}
         {mode === "compare" && <ComparisonView uid={firebaseUser?.uid} onGoLive={() => setMode("live")} />}
         {mode === "guide" && <GuideView onStartTour={startTour} />}
+        {mode === "settings" && <SettingsView uid={firebaseUser?.uid} />}
       </div>
 
       {/* DEMO ENTRY POINT — small, out of the way, not competing with the LIVE/TRACKER/etc tabs */}
