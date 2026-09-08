@@ -1345,16 +1345,73 @@ const LIVE_CAPABILITY_BADGES = ["5 Risk Categories", "Sourced Evidence", "Partia
 // matching, etc.) — a PDF upload for any of these is text-extracted client-side first so the
 // workflow never has to know the source was a PDF instead of pasted text.
 const DEAL_DOCUMENT_FIELDS = [
-  { key: "customer_revenue_csv", label: "Customer Revenue", hint: "CSV of customer names & revenue — paste, or upload a PDF/CSV.", placeholder: "customer,revenue\nAcme Corp,150000\n…" },
-  { key: "owner_interview_transcript", label: "Owner Interview", hint: "Interview transcript or notes — paste, or upload a PDF/text file.", placeholder: "Owner handles all customer relationships personally…" },
-  { key: "org_chart", label: "Org Chart", hint: "Reporting lines & key roles — paste, or upload a PDF.", placeholder: "Owner/CEO: handles all customer relationships…" },
-  { key: "sop_documents", label: "SOP Documents", hint: "Documented (or undocumented) operating procedures — paste, or upload a PDF.", placeholder: "Job scheduling: whiteboard and spreadsheet system…" },
-  { key: "employee_roster", label: "Employee Roster", hint: "CSV roster — paste, or upload a PDF/CSV.", placeholder: "name,role,department,tenure_years,salary_annual,has_noncompete\n…" },
-  { key: "site_visit_notes", label: "Site Visit Notes", hint: "Free-form notes from the on-site visit — paste, or upload a PDF.", placeholder: "Office is a converted garage…" },
+  { key: "customer_revenue_csv", label: "Customer Revenue", hint: "CSV of customer names & revenue — paste, or upload a PDF/CSV/XLSM.", placeholder: "customer,revenue\nAcme Corp,150000\n…" },
+  { key: "owner_interview_transcript", label: "Owner Interview", hint: "Interview transcript or notes — paste, or upload a PDF/text/DOCX file, or a PNG screenshot (e.g. an email thread).", placeholder: "Owner handles all customer relationships personally…" },
+  { key: "org_chart", label: "Org Chart", hint: "Reporting lines & key roles — paste, or upload a PDF/DOCX.", placeholder: "Owner/CEO: handles all customer relationships…" },
+  { key: "sop_documents", label: "SOP Documents", hint: "Documented (or undocumented) operating procedures — paste, or upload a PDF/DOCX.", placeholder: "Job scheduling: whiteboard and spreadsheet system…" },
+  { key: "employee_roster", label: "Employee Roster", hint: "CSV roster — paste, or upload a PDF/CSV/XLSM.", placeholder: "name,role,department,tenure_years,salary_annual,has_noncompete\n…" },
+  { key: "site_visit_notes", label: "Site Visit Notes", hint: "Free-form notes from the on-site visit — paste, or upload a PDF/DOCX.", placeholder: "Office is a converted garage…" },
 ];
 
 async function extractTextFromFile(file) {
   const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+  const isDocx = /\.docx$/i.test(file.name) || file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  const isSpreadsheet = /\.(xlsm|xlsx|xltx)$/i.test(file.name) || [
+    "application/vnd.ms-excel.sheet.macroEnabled.12",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+  ].includes(file.type);
+  const isPng = /\.png$/i.test(file.name) || file.type === "image/png";
+
+  if (isPng) {
+    // PNG has no text layer at all (unlike the scanned-PDF case, which pdf.js correctly returns
+    // empty text for) — OCR is the only way to get anything out of it. Tesseract.js is lazy-loaded
+    // for the same bundle-size reason as mammoth/xlsx above, and is heavier still; it fetches its
+    // own WASM engine + trained-language data from a CDN at run time rather than bundling them, so
+    // there's no webpack chunk cost either, just a one-time network fetch cached by the browser.
+    // Scoped to prose-style content (email/interview screenshots) rather than scanned financial
+    // tables — OCR misreading a word is a minor annoyance an analyst can catch on read-through;
+    // misreading a digit in a P&L is a silent, dangerous error, which is why that case (see the
+    // scanned-PDF discussion) is being held separately rather than folded into this same path.
+    const { createWorker } = await import("tesseract.js");
+    const worker = await createWorker("eng");
+    try {
+      const { data: { text } } = await worker.recognize(file);
+      return text;
+    } finally {
+      await worker.terminate();
+    }
+  }
+
+  if (isDocx) {
+    // Lazy-loaded — mammoth is a sizeable dependency and most uploads are still PDFs, so it's
+    // not worth shipping to everyone on first page load just for the occasional .docx.
+    const { default: mammoth } = await import("mammoth");
+    const buffer = await file.arrayBuffer();
+    const { value } = await mammoth.extractRawText({ arrayBuffer: buffer });
+    return value;
+  }
+
+  if (isSpreadsheet) {
+    // Same reasoning as mammoth above — xlsx (SheetJS) bundles support for many spreadsheet
+    // formats and is large; only fetch it when a spreadsheet actually shows up. SheetJS reads
+    // .xlsx/.xltx/.xlsm identically (same OOXML zip format under the hood; .xlsm just carries an
+    // ignored macro payload alongside), so one code path covers all three.
+    const XLSX = await import("xlsx");
+    const buffer = await file.arrayBuffer();
+    const workbook = XLSX.read(buffer, { type: "array" });
+    // A single-sheet workbook (the common case for a purpose-built DD file, e.g. a revenue or
+    // roster export) is returned as plain CSV with no extra header line, so its own first row
+    // stays on line 1 — classifyDocument's firstLine shortcut and the line-anchored deal-fact
+    // regexes below are anchored to the start of the text and would miss past an inserted label.
+    if (workbook.SheetNames.length === 1) {
+      return XLSX.utils.sheet_to_csv(workbook.Sheets[workbook.SheetNames[0]]);
+    }
+    return workbook.SheetNames
+      .map(name => `--- ${name} ---\n${XLSX.utils.sheet_to_csv(workbook.Sheets[name])}`)
+      .join("\n\n");
+  }
+
   if (!isPdf) return file.text();
 
   const buffer = await file.arrayBuffer();
@@ -2036,7 +2093,7 @@ function LiveView({ analystName, uid, onGoTracker, onStartTour, hasSeenTour }) {
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".pdf,.csv,.txt,.json,application/pdf,text/csv,text/plain,application/json"
+            accept=".pdf,.csv,.txt,.json,.docx,.xlsm,.xlsx,.xltx,.png,application/pdf,text/csv,text/plain,application/json,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel.sheet.macroEnabled.12,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.spreadsheetml.template,image/png"
             onChange={e => { handleDocumentFiles(e.target.files); e.target.value = ""; }}
             onClick={e => e.stopPropagation()}
             style={{ display: "none" }}
